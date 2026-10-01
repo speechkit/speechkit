@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/5.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 4128,
+      "start_ms": 550,
+      "text": "周望君就落实控物价"
+    }
+  ],
+  "text": "周望君就落实控物价"
+}

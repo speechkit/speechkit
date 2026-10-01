@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/en.wav",
+  "model": "sense-voice",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 6508,
+      "start_ms": 1062,
+      "text": "The tribal chieftain called for the boy and presented him with 50 pieces of code."
+    }
+  ],
+  "text": "The tribal chieftain called for the boy and presented him with 50 pieces of code."
+}

@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/4.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 4076,
+      "start_ms": 518,
+      "text": "蒋友伯被拍到带着女儿出游"
+    }
+  ],
+  "text": "蒋友伯被拍到带着女儿出游"
+}

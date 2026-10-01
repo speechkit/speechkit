@@ -1,0 +1,3 @@
+# imports_granularity and group_imports need nightly rustfmt; CI runs
+# stable rustfmt, so they are left out.
+edition = "2024"

@@ -1,0 +1,161 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` builds the CLI for each platform, publishes the
+# crates to crates.io, and creates a GitHub release with the binaries and
+# the changelog section. The tag must match the workspace version and
+# CHANGELOG.md must date that version; run `cargo xtask release-check`
+# before tagging, since it covers what this workflow does not (semver,
+# MSRV, and a recent models.yml run).
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Check the tag against the manifest and changelog
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "speechkit") | .version')
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $manifest"
+            exit 1
+          fi
+          if ! grep -Eq "^## \[$version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated section for $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # sherpa-onnx links statically on these targets, so the archives need
+  # no other files. They hold only `speechkit`: `speechkit-worker` serves
+  # library users, who build it against their own speechkit version.
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04, not latest: the binary needs a glibc at least as old
+          # as the build machine's.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add ${{ matrix.target }}
+        shell: bash
+      - uses: ./.github/actions/native
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked -p speechkit-cli --bin speechkit --target ${{ matrix.target }}
+        env:
+          # The Windows static sherpa-onnx libraries use the static CRT (/MT).
+          RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
+      - name: Package
+        shell: bash
+        run: |
+          name="speechkit-${{ needs.check.outputs.version }}-${{ matrix.target }}"
+          dir="target/${{ matrix.target }}/release"
+          mkdir -p "dist/$name"
+          cp LICENSE README.md CHANGELOG.md "dist/$name/"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "$dir/speechkit.exe" "dist/$name/"
+            (cd dist && 7z a "$name.zip" "$name" >/dev/null)
+          else
+            cp "$dir/speechkit" "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  # Runs only after every binary built, since a crates.io release cannot
+  # be undone. Already-published versions are skipped, so a failed run
+  # can be rerun.
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # crates.io trusted publishing
+    env:
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/native
+      # Trusted publishing, unless a CARGO_REGISTRY_TOKEN secret is set:
+      # a crate's first version cannot use trusted publishing.
+      - id: auth
+        if: env.HAS_TOKEN != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          for crate in speechkit speechkit-cli; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+              -A "speechkit-release (github.com/${GITHUB_REPOSITORY})" \
+              "https://crates.io/api/v1/crates/$crate/$VERSION")
+            if [ "$status" = 200 ]; then
+              echo "$crate $VERSION is already on crates.io"
+            else
+              cargo publish --locked -p "$crate"
+            fi
+          done
+
+  release:
+    needs: [check, build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # The changelog section for this version, without its heading.
+          awk -v v="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            found
+          ' CHANGELOG.md > notes.md
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "speechkit $VERSION" --notes-file notes.md --verify-tag "${prerelease[@]}"

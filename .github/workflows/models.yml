@@ -1,0 +1,52 @@
+name: Models
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  SPEECHKIT_MODELS: ${{ github.workspace }}/.models
+
+jobs:
+  models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: .models
+          key: models-${{ hashFiles('fixtures/manifest.json') }}
+          restore-keys: models-
+      # Goldens and near-ties depend on the CPU's instruction set.
+      - name: Runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -qw avx512f /proc/cpuinfo && echo "AVX-512: yes" || echo "AVX-512: no"
+          free -h | head -2
+      - uses: ./.github/actions/native
+      - run: cargo xtask fetch-fixtures
+      - run: cargo test --workspace --all-features --no-fail-fast -- --ignored
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+      # The latency tests already ran above; rerun them showing their output,
+      # so each run's numbers are in the log.
+      - name: Latency numbers
+        if: ${{ !cancelled() }}
+        run: cargo test -p speechkit --all-features --test sherpa_latency -- --ignored --nocapture --test-threads 1
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+
+  props:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      - run: cargo test --release -p speechkit --test asr_props
+        env:
+          SPEECHKIT_PROPTEST_CASES: "10000"

@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+description = "Development tasks for the speechkit workspace."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bzip2 = "0.6"
+clap.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+
+[lints]
+workspace = true

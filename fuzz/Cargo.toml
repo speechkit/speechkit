@@ -1,0 +1,41 @@
+[package]
+name = "speechkit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+speechkit = { path = "../crates/speechkit", features = ["server"] }
+speechkit-testkit = { path = "../crates/speechkit-testkit" }
+axum = { version = "0.8", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+
+# Not part of the main workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode_audio"
+path = "fuzz_targets/decode_audio.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_wav_bytes"
+path = "fuzz_targets/read_wav_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_request"
+path = "fuzz_targets/server_request.rs"
+test = false
+doc = false
+bench = false

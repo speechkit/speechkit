@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/zh.wav",
+  "model": "sense-voice",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 5568,
+      "start_ms": 742,
+      "text": "开饭时间早上9点至下午5点。"
+    }
+  ],
+  "text": "开饭时间早上9点至下午5点。"
+}

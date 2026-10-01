@@ -1,0 +1,18 @@
+{
+  "audio": "test_wavs/3.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 5516,
+      "start_ms": 454,
+      "text": "文森特卡所是全球知名的法国性"
+    },
+    {
+      "end_ms": 8000,
+      "start_ms": 6086,
+      "text": "格派演员"
+    }
+  ],
+  "text": "文森特卡所是全球知名的法国性格派演员"
+}

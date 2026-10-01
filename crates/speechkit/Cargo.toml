@@ -1,0 +1,108 @@
+[package]
+name = "speechkit"
+description = "Rust speech recognition and synthesis toolkit. Not affiliated with Yandex SpeechKit."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+## Compressed audio decoding.
+decode = ["dep:symphonia"]
+## Serialize and deserialize public types with serde.
+serde = ["dep:serde"]
+## Local sherpa-onnx recognition, synthesis, silero VAD, and punctuation.
+sherpa = ["dep:sherpa-onnx", "dep:serde", "dep:serde_json", "dep:postcard", "dep:pinyin"]
+## Link sherpa-onnx dynamically, so CUDA or CoreML builds can be supplied.
+sherpa-shared = ["sherpa", "sherpa-onnx/shared"]
+## OpenAI-compatible transcription, Realtime, and speech.
+openai = ["websocket", "dep:reqwest", "dep:base64"]
+## DashScope speech recognition and synthesis.
+dashscope = ["websocket", "dep:uuid"]
+# Shared WebSocket transport for the cloud backends; not a public feature.
+websocket = ["dep:tokio", "tokio/rt-multi-thread", "tokio/time", "tokio/sync", "dep:serde_json", "dep:futures", "dep:tokio-tungstenite", "dep:rustls", "dep:webpki-roots"]
+## Microphones and speakers.
+devices = ["dep:cpal", "dep:ringbuf"]
+## The OpenAI-compatible HTTP server, with transcription, speech, and bearer-token authentication.
+server = [
+    "decode",
+    "dep:axum",
+    "dep:tokio",
+    "tokio/rt-multi-thread",
+    "tokio/net",
+    "tokio/signal",
+    "tokio/sync",
+    "tokio/time",
+    "tokio/macros",
+    "dep:futures",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:serde_json",
+    "dep:tower-http",
+]
+## Everything except `serde` and `sherpa-shared`.
+full = ["decode", "sherpa", "openai", "dashscope", "devices", "server"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+rubato.workspace = true
+hound.workspace = true
+unicode-segmentation = "1"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+symphonia = { workspace = true, optional = true }
+# sherpa: without a linking feature, sherpa-onnx-sys links statically on
+# desktop. Forcing `static` would conflict with the optional `shared`.
+sherpa-onnx = { workspace = true, optional = true }
+postcard = { version = "1", optional = true, default-features = false, features = ["use-std"] }
+# Chinese wake words: characters to toned pinyin, the tokens of the KWS models.
+pinyin = { version = "0.11", optional = true, default-features = false, features = ["with_tone"] }
+# cloud
+tokio = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["multipart", "stream"] }
+futures = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+uuid = { version = "1", optional = true, features = ["v4"] }
+# io
+cpal = { workspace = true, optional = true }
+ringbuf = { workspace = true, optional = true }
+# server
+axum = { workspace = true, optional = true, features = ["http1", "tokio", "json", "multipart"] }
+hyper = { version = "1", optional = true, features = ["server", "http1"] }
+hyper-util = { version = "0.1", optional = true, features = ["tokio", "server", "server-graceful", "service", "http1"] }
+tower-http = { version = "0.6", optional = true, default-features = false, features = ["timeout"] }
+
+[target.'cfg(speechkit_loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+speechkit-testkit = { workspace = true, features = ["devices"] }
+proptest.workspace = true
+criterion.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio-tungstenite = { workspace = true, features = ["connect", "handshake"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+base64 = "0.22"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+
+[[bench]]
+name = "core"
+harness = false
+
+[lints]
+workspace = true

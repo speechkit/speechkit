@@ -1,0 +1,108 @@
+name: Nightly
+
+# Checks too slow, or too rarely broken, to run on every push (see ci.yml).
+# Real-model tests are in models.yml and fuzzing in fuzz.yml.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      - run: cargo test --workspace --all-features
+        shell: bash
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+
+  # Checks that share one Linux build; each step runs even if an earlier
+  # one failed, so one run reports every failure.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      - name: Install ffmpeg
+        run: command -v ffmpeg || sudo apt-get install -y ffmpeg
+      - name: test-minimal
+        run: cargo test --workspace --no-default-features
+      - name: hack
+        if: ${{ !cancelled() }}
+        run: cargo hack check --each-feature --workspace --no-dev-deps
+      - name: feature-powerset
+        if: ${{ !cancelled() }}
+        run: cargo hack check -p speechkit --feature-powerset --depth 2
+      - name: decode
+        if: ${{ !cancelled() }}
+        run: |
+          cargo xtask gen-audio-fixtures --out "$RUNNER_TEMP/audio"
+          cargo test -p speechkit --features decode --test decode
+        env:
+          SPEECHKIT_DECODE_FIXTURES: ${{ runner.temp }}/audio
+          SPEECHKIT_REQUIRE_FIXTURES: "1"
+
+  # Coverage and loom each build the crate again with different flags, so
+  # they get their own runners: sharing one ran out of disk.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      # At least 85% of the core's lines (everything outside
+      # the backend, device, and server modules).
+      - run: cargo llvm-cov -p speechkit --all-features --ignore-filename-regex 'src/(sherpa|cloud|io|server)/' --fail-under-lines 85
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/llvm-cov-target/debug
+
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      - run: cargo test --release -p speechkit --lib -- slots history
+        env:
+          RUSTFLAGS: --cfg speechkit_loom
+          LOOM_MAX_PREEMPTIONS: "2"
+
+  msrv:
+    runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml would otherwise override the toolchain installed
+      # below, and the check would run on the pinned newer compiler.
+      RUSTUP_TOOLCHAIN: "1.88" # the MSRV in Cargo.toml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: rustc --version
+      - uses: ./.github/actions/native
+      - run: cargo check --workspace --all-features

@@ -1,0 +1,6 @@
+* text=auto eol=lf
+fixtures/audio/* binary
+*.wav binary
+*.mp3 binary
+*.flac binary
+*.onnx binary

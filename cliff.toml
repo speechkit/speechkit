@@ -1,0 +1,47 @@
+# git-cliff: builds CHANGELOG.md from Conventional Commits.
+# The 0.2.0 section is written by hand, since a first release is better
+# summarized than listed. For each later release, prepend a section:
+#   git cliff --unreleased --tag v<version> --prepend CHANGELOG.md
+# `cargo xtask release-check` requires a section for the version.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to speechkit. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
+
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+# Only what users notice: docs, tests, CI, and build changes are left out,
+# except `ci(release)`, which changes what the release archives contain.
+commit_parsers = [
+    { message = "^[a-z]+\\((ci|xtask|testkit)\\)", skip = true },
+    { message = "^ci\\(release\\)", group = "<!-- 3 -->Changed" },
+    { message = "^feat", group = "<!-- 0 -->Added" },
+    { message = "^fix", group = "<!-- 1 -->Fixed" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Changed" },
+    { body = ".*BREAKING CHANGE.*", group = "<!-- 3 -->Changed" },
+    { message = ".*", skip = true },
+]
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"

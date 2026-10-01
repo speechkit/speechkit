@@ -1,0 +1,23 @@
+{
+  "audio": "test_wavs/1.wav",
+  "model": "streaming-bilingual",
+  "partials": [
+    "这是",
+    "这是第一种",
+    "这是第一种第二种",
+    "这是第一种第二种叫",
+    "这是第一种第二种叫呃",
+    "这是第一种第二种叫呃与",
+    "这是第一种第二种叫呃与 ALWAYS",
+    "这是第一种第二种叫呃与 ALWAYS ALWAYS",
+    "这是第一种第二种叫呃与 ALWAYS ALWAYS什么"
+  ],
+  "segments": [
+    {
+      "end_ms": null,
+      "start_ms": null,
+      "text": "这是第一种第二种叫呃与 ALWAYS ALWAYS什么意思啊"
+    }
+  ],
+  "text": "这是第一种第二种叫呃与 ALWAYS ALWAYS什么意思啊"
+}

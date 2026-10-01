@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/1.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 5152,
+      "start_ms": 134,
+      "text": "重点呢想谈三个问题首先呢就是这一轮全球金融动荡的表现啊"
+    }
+  ],
+  "text": "重点呢想谈三个问题首先呢就是这一轮全球金融动荡的表现啊"
+}

@@ -1,0 +1,23 @@
+name: Native dependencies
+description: >-
+  Install the system packages native crates need, and make sure the
+  sherpa-onnx prebuilt libraries are complete. rust-cache keeps an empty
+  sherpa-onnx-prebuilt skeleton that sherpa-onnx-sys mistakes for a
+  finished download, so the skeleton is removed and the build script rerun.
+  This is done for target/ and for target/llvm-cov-target/, which
+  cargo-llvm-cov builds into.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux packages
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+    - name: Reset sherpa-onnx prebuilt libraries
+      shell: bash
+      run: |
+        for dir in target target/llvm-cov-target; do
+          rm -rf "$dir/sherpa-onnx-prebuilt"
+          cargo clean -p sherpa-onnx-sys --target-dir "$dir" || true
+        done

@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/ja.wav",
+  "model": "sense-voice",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 6156,
+      "start_ms": 486,
+      "text": "うちの中学は弁当制で持っていけない場合は五十円の学校販売のパンを買う。"
+    }
+  ],
+  "text": "うちの中学は弁当制で持っていけない場合は五十円の学校販売のパンを買う。"
+}

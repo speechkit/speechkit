@@ -1,0 +1,26 @@
+{
+  "audio": "test_wavs/2.wav",
+  "model": "streaming-bilingual",
+  "partials": [
+    "是不是",
+    "是不是频繁",
+    "是不是频繁的啊",
+    "是不是频繁的啊不",
+    "是不是频繁的啊不认识",
+    "是不是频繁的啊不认识记下来",
+    "是不是频繁的啊不认识记下来 F",
+    "是不是频繁的啊不认识记下来 FREQUENT",
+    "是不是频繁的啊不认识记下来 FREQUENTLY",
+    "是不是频繁的啊不认识记下来 FREQUENTLY频",
+    "是不是频繁的啊不认识记下来 FREQUENTLY频繁",
+    "是不是频繁的啊不认识记下来 FREQUENTLY频繁的"
+  ],
+  "segments": [
+    {
+      "end_ms": null,
+      "start_ms": null,
+      "text": "是不是频繁的啊不认识记下来 FREQUENTLY频繁的"
+    }
+  ],
+  "text": "是不是频繁的啊不认识记下来 FREQUENTLY频繁的"
+}

@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/ko.wav",
+  "model": "sense-voice",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 3692,
+      "start_ms": 806,
+      "text": "조 금만 생각 을 하 면서 살 면 훨씬 편할 거야."
+    }
+  ],
+  "text": "조 금만 생각 을 하 면서 살 면 훨씬 편할 거야."
+}

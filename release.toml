@@ -1,0 +1,6 @@
+# cargo-release: every published crate shares one version.
+shared-version = true
+consolidate-commits = true
+tag-name = "v{{version}}"
+allow-branch = ["master"]
+pre-release-commit-message = "chore: release {{version}}"

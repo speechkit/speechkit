@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/6.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 3520,
+      "start_ms": 550,
+      "text": "朱立南在上市见面会上表示"
+    }
+  ],
+  "text": "朱立南在上市见面会上表示"
+}

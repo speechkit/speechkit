@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/0.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 5004,
+      "start_ms": 326,
+      "text": "对我做了介绍哈那么我想说的是呢大家如果对我的研究感兴趣呢"
+    }
+  ],
+  "text": "对我做了介绍哈那么我想说的是呢大家如果对我的研究感兴趣呢"
+}

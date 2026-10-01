@@ -1,0 +1,18 @@
+{
+  "audio": "test_wavs/5-henan.wav",
+  "model": "paraformer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 4236,
+      "start_ms": 102,
+      "text": "这个管一向都通到有时候都通到七八层楼高"
+    },
+    {
+      "end_ms": 7968,
+      "start_ms": 5030,
+      "text": "然后他这管一向就可以浇到那个那柱子上"
+    }
+  ],
+  "text": "这个管一向都通到有时候都通到七八层楼高然后他这管一向就可以浇到那个那柱子上"
+}

@@ -1,0 +1,36 @@
+{
+  "audio": "test_wavs/0.wav",
+  "model": "streaming-bilingual",
+  "partials": [
+    "昨",
+    "昨天",
+    "昨天是",
+    "昨天是 MON",
+    "昨天是 MONDAY",
+    "TODAY",
+    "TODAY IS",
+    "TODAY IS LI",
+    "TODAY IS LIB",
+    "TODAY IS LIBR",
+    "TODAY IS LIBR THE",
+    "TODAY IS LIBR THE DAY",
+    "TODAY IS LIBR THE DAY AFTER",
+    "TODAY IS LIBR THE DAY AFTER TOMORROW",
+    "TODAY IS LIBR THE DAY AFTER TOMORROW是",
+    "TODAY IS LIBR THE DAY AFTER TOMORROW是星",
+    "TODAY IS LIBR THE DAY AFTER TOMORROW是星期三"
+  ],
+  "segments": [
+    {
+      "end_ms": null,
+      "start_ms": null,
+      "text": "昨天是 MONDAY"
+    },
+    {
+      "end_ms": null,
+      "start_ms": null,
+      "text": "TODAY IS LIBR THE DAY AFTER TOMORROW是星期三"
+    }
+  ],
+  "text": "昨天是 MONDAY TODAY IS LIBR THE DAY AFTER TOMORROW是星期三"
+}

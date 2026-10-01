@@ -1,0 +1,41 @@
+[package]
+name = "speechkit-cli"
+description = "Command-line interface for speechkit: transcribe, stream, synthesize, and serve speech."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "speechkit"
+path = "src/main.rs"
+# The library crate is also called speechkit; its docs take the name.
+doc = false
+
+# Crash-isolation worker started by `speechkit::sherpa::process::IsolatedAsr`.
+[[bin]]
+name = "speechkit-worker"
+path = "src/bin/speechkit-worker.rs"
+doc = false
+
+[dependencies]
+speechkit = { workspace = true, features = ["full", "serde"] }
+clap.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+speechkit-testkit.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "speechkit-testkit"
+description = "Fakes, scripted backends, and contract suites for testing speechkit."
+readme = "README.md"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+## The device contract, run on the hidden fake devices.
+devices = ["speechkit/devices"]
+
+[dependencies]
+speechkit.workspace = true
+
+[lints]
+workspace = true

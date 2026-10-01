@@ -1,0 +1,23 @@
+{
+  "audio": "test_wavs/6-zh-en.wav",
+  "model": "paraformer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 1772,
+      "start_ms": 358,
+      "text": "yesterday was"
+    },
+    {
+      "end_ms": 3052,
+      "start_ms": 2278,
+      "text": "星期一"
+    },
+    {
+      "end_ms": 8096,
+      "start_ms": 3622,
+      "text": "today is tuesday 明天是星期三"
+    }
+  ],
+  "text": "yesterday was星期一today is tuesday 明天是星期三"
+}

@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/yue.wav",
+  "model": "sense-voice",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 4108,
+      "start_ms": 934,
+      "text": "呢几个字都表达唔到，我想讲嘅意思。"
+    }
+  ],
+  "text": "呢几个字都表达唔到，我想讲嘅意思。"
+}

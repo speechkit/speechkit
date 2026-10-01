@@ -1,0 +1,66 @@
+name: CI
+
+# The fast gate for every push to master and every pull request. Slower and
+# rarely-failing checks (MSRV, feature combinations, loom, coverage, the other
+# operating systems) run in nightly.yml.
+
+on:
+  push:
+    branches: [master]
+    # Crate and module READMEs are doctests, so only root-level Markdown and
+    # docs/ are skipped.
+    paths: ["**", "!*.md", "!docs/**"]
+  pull_request:
+    paths: ["**", "!*.md", "!docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo deny check
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pull requests also test macOS and Windows; pushes rely on nightly.yml.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/native
+      # `--all-features` turns on sherpa's `shared` linking; doctest
+      # binaries run from a temp dir and need the copied library found.
+      # `--no-fail-fast` runs every test binary after a failure: without it
+      # cargo stops at the first failing one, and the binaries after it
+      # (the alphabet decides) never run in that job.
+      - run: cargo test --workspace --all-features --no-fail-fast
+        shell: bash
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug

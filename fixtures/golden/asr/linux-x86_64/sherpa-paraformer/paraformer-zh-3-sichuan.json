@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/3-sichuan.wav",
+  "model": "paraformer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 7808,
+      "start_ms": 102,
+      "text": "自己就是在那个在那个就是在情节里面就是感觉是演的特别好就是好像很真式一样你知道吧"
+    }
+  ],
+  "text": "自己就是在那个在那个就是在情节里面就是感觉是演的特别好就是好像很真式一样你知道吧"
+}

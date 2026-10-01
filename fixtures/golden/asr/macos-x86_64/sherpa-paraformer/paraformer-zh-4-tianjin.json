@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/4-tianjin.wav",
+  "model": "paraformer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 7808,
+      "start_ms": 70,
+      "text": "其实他就是骂每个人都可以守法就这意思法律意识太单薄了而且就是嗯也不顾及到别人的感受"
+    }
+  ],
+  "text": "其实他就是骂每个人都可以守法就这意思法律意识太单薄了而且就是嗯也不顾及到别人的感受"
+}

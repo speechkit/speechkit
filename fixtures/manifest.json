@@ -1,0 +1,787 @@
+{
+  "comment": "Model archives used by ignored tests. Parsed by cargo xtask only; the library never reads it. Only top-level files are listed, since the archive hash covers the rest when it is fetched.",
+  "models": [
+    {
+      "id": "silero-vad",
+      "name": "silero_vad.onnx",
+      "kind": "vad",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+        "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+        "size": 643854
+      },
+      "files": []
+    },
+    {
+      "id": "streaming-en",
+      "name": "sherpa-onnx-streaming-zipformer-en-2023-06-26",
+      "kind": "asr",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2",
+        "sha256": "639e25b578e9e997131402199419c13a941f8e4e198e2da1ce57dbf5cf401282",
+        "size": 310414022
+      },
+      "files": [
+        {
+          "path": "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+          "sha256": "780c63ee94c7cfa314211172e5d09b406c0da2beab5c40ea2f54cc95670b76a5",
+          "size": 540688
+        },
+        {
+          "path": "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+          "sha256": "85914f840b71110487ece7a30ebd0bd4b8fb5c2623215bba3aa5ab4c138fc591",
+          "size": 2093080
+        },
+        {
+          "path": "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+          "sha256": "5022b2eca5b19d1bc104fcf33e26bc32604b7df553cd2e1f62e31dc7b05e9c87",
+          "size": 70108816
+        },
+        {
+          "path": "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+          "sha256": "d1d74ba2fd9ce2186662cec93eab9f9c102d97a18e86dafdaf584776c961ab1d",
+          "size": 260642850
+        },
+        {
+          "path": "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+          "sha256": "abd5e30f3f16fc510605c6029dba33f10e4386bd75c5bdc30cf94076864db10d",
+          "size": 259416
+        },
+        {
+          "path": "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+          "sha256": "5fe99bb91ea035ab82765f65955b6a9cd2f8b7ebd320761e432d16e432dcaad9",
+          "size": 1026462
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+          "size": 212044
+        },
+        {
+          "path": "test_wavs/1.wav",
+          "sha256": "5143a6ba93c4b274e2c4ac22deb75c2c48936c853f0519add1de828b6c79cc5a",
+          "size": 534924
+        },
+        {
+          "path": "test_wavs/8k.wav",
+          "sha256": "f6f3c8b33e2534cdc154fe773ad2750f1f6a2ca5096179cdf037ae782456613e",
+          "size": 77244
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+          "size": 5048
+        }
+      ]
+    },
+    {
+      "id": "streaming-bilingual",
+      "name": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+      "kind": "asr",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2",
+        "sha256": "27ffbd9ee24ad186d99acc2f6354d7992b27bcab490812510665fa8f9389c5f8",
+        "size": 511274346
+      },
+      "files": [
+        {
+          "path": "bpe.vocab",
+          "sha256": "d0b642f3a2eacd5fadefdeff9e0e1358cab729647cbb7fe58cf738e1f7407029",
+          "size": 12564
+        },
+        {
+          "path": "decoder-epoch-99-avg-1.onnx",
+          "sha256": "2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d",
+          "size": 13876452
+        },
+        {
+          "path": "encoder-epoch-99-avg-1.int8.onnx",
+          "sha256": "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+          "size": 181895032
+        },
+        {
+          "path": "joiner-epoch-99-avg-1.int8.onnx",
+          "sha256": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+          "size": 3228404
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "7d93384ca14702cc584a7a33fe2fed92e89e708549161cb12ea38c916882103b",
+          "size": 321744
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3",
+          "size": 56317
+        }
+      ]
+    },
+    {
+      "id": "transducer-zh",
+      "name": "sherpa-onnx-conformer-zh-stateless2-2023-05-23",
+      "kind": "asr",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-conformer-zh-stateless2-2023-05-23.tar.bz2",
+        "sha256": "465ccb989f19368bef41507e48ec0f36af76927de64517080cf5f81fb7e6c854",
+        "size": 456480884
+      },
+      "files": [
+        {
+          "path": "decoder-epoch-99-avg-1.onnx",
+          "sha256": "5b744ad1502cc684f470d9cf1aabe8ae084299cbec5059031f7394022f5789d2",
+          "size": 12395746
+        },
+        {
+          "path": "encoder-epoch-99-avg-1.int8.onnx",
+          "sha256": "634411c78f307307daea8cfd3e02ab935b159a348f982decebf2e05ddfd02f98",
+          "size": 127432599
+        },
+        {
+          "path": "joiner-epoch-99-avg-1.int8.onnx",
+          "sha256": "5761d305b610b9a32719a4b830987ff437a7e50ec7f84d6bf4cc18f872611893",
+          "size": 2858432
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "668bf8df51a10027b84d5d8816a1ce11ae93545538dc05cfe2aa6811d399c250",
+          "size": 179646
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "8b294db9045d6e5f94647f4c1eec1af4da143a75053c399611444b378ff966ac",
+          "size": 48697
+        }
+      ]
+    },
+    {
+      "id": "sense-voice",
+      "name": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+      "kind": "asr",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+        "sha256": "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e",
+        "size": 163002883
+      },
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+          "size": 239233841
+        },
+        {
+          "path": "test_wavs/en.wav",
+          "sha256": "eb1eb008904465b74c304aad8342e8c7d3c6e61ffe9f66adcaca9cf0f76a93f4",
+          "size": 228908
+        },
+        {
+          "path": "test_wavs/ja.wav",
+          "sha256": "460bd8dccb0d2a5f4e29c628f837be4082d13defc64c3fc21dd1b6bb0e119095",
+          "size": 230444
+        },
+        {
+          "path": "test_wavs/ko.wav",
+          "sha256": "0dc797a5c81ed30fc339d91f3da718ab02854e17ffa37cb93c4c039ac5c6bb9c",
+          "size": 147500
+        },
+        {
+          "path": "test_wavs/yue.wav",
+          "sha256": "0960b2db54ae202071d250e6462fbf74a3c863f0e3e7f01273e4939c996875a0",
+          "size": 164780
+        },
+        {
+          "path": "test_wavs/zh.wav",
+          "sha256": "b77f1794fe374a0ba1ee1dc458bfaf9349496cbbfc32780c50ba3c5a7ad8e373",
+          "size": 178988
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+          "size": 315894
+        }
+      ]
+    },
+    {
+      "id": "paraformer-zh",
+      "name": "sherpa-onnx-paraformer-zh-2023-09-14",
+      "kind": "asr",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2",
+        "sha256": "9c49fd9c6fb63de8e18c1054cf3d100f804741b7e608e187923cd8ff09fa9f03",
+        "size": 234051698
+      },
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "f36a0433bcf096bd6d6f11b80a3ac8bed110bdca632fe0d731df8d1a84475945",
+          "size": 243371218
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "1a6bf94091d9c35e11aea5d494d05e3287b8f5c767f6de3bfd796d91b637500c",
+          "size": 179712
+        },
+        {
+          "path": "test_wavs/1.wav",
+          "sha256": "d1a6d1f1a9eff2d8afea3f043bfe0a317a0ce4c4e36df1795781c83c95911bbe",
+          "size": 165042
+        },
+        {
+          "path": "test_wavs/2.wav",
+          "sha256": "064140723b8580b54d765149c7b11c3b98f352eae441a51b00176e76b7ddab16",
+          "size": 144922
+        },
+        {
+          "path": "test_wavs/3-sichuan.wav",
+          "sha256": "150b75ada9f5b4011018e961e56427e4af6849fcc69764321556586bc4790c49",
+          "size": 250764
+        },
+        {
+          "path": "test_wavs/4-tianjin.wav",
+          "sha256": "1127451bad4c45953a5b788ab4977170388e91454ef90fee55754c4587628782",
+          "size": 249932
+        },
+        {
+          "path": "test_wavs/5-henan.wav",
+          "sha256": "ed767dc9a89489888060c65bc246e702b2ab25e16977998be10edc459c9e4397",
+          "size": 255724
+        },
+        {
+          "path": "test_wavs/6-zh-en.wav",
+          "sha256": "eddf384a906bd6d905c9d9d652d614def1857608b88c2eee663ceeccbb31f7a3",
+          "size": 259278
+        },
+        {
+          "path": "test_wavs/8k.wav",
+          "sha256": "a82bb1f303510e825a6dbbccdbc4a4659850a73eb790c707886bee30f7ea76d8",
+          "size": 67308
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6",
+          "size": 75756
+        }
+      ]
+    },
+    {
+      "id": "punct-zh-en",
+      "name": "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8",
+      "kind": "punct",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2",
+        "sha256": "c0d5aa5f8eeb686032345e180bedf39319dc2e0556781c6264bcadba8328a6e1",
+        "size": 64717756
+      },
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1",
+          "size": 75519198
+        }
+      ]
+    },
+    {
+      "id": "punct-en",
+      "name": "sherpa-onnx-online-punct-en-2024-08-06",
+      "kind": "punct",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-online-punct-en-2024-08-06.tar.bz2",
+        "sha256": "9f5e5a72c7d2829635bd074fce92b6bbd5b78da8a52e7ad8ed1be933f366b99d",
+        "size": 30667839
+      },
+      "files": [
+        {
+          "path": "bpe.vocab",
+          "sha256": "e118b7ad88c54db562517df49e1cffd4836d166c34fb190fd311d7f34eb238f5",
+          "size": 149430
+        },
+        {
+          "path": "model.int8.onnx",
+          "sha256": "9d611f445fe4a46186080fe161be6059d87d72eb88d3a8cb00c1a06e83a6067e",
+          "size": 7490500
+        }
+      ]
+    },
+    {
+      "id": "tts-piper-en",
+      "name": "vits-piper-en_US-amy-low",
+      "kind": "tts",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2",
+        "sha256": "c70f5284a09a7fd4ed203b39b2ff51cac1432b422b852eb647b481dade3cf639",
+        "size": 67095344
+      },
+      "files": [
+        {
+          "path": "MODEL_CARD",
+          "sha256": "71b07ded301a96346096a71d8f0d64cbb5f49d5d51004dce28bbb7504e3f65f0",
+          "size": 273
+        },
+        {
+          "path": "en_US-amy-low.onnx",
+          "sha256": "8275b02c37c4ce6483b26a91704807e6de0c3f0bf8068e5d3b3598ab0da4253e",
+          "size": 63104657
+        },
+        {
+          "path": "en_US-amy-low.onnx.json",
+          "sha256": "2250a9a605b8dc35a116717fadc5056695dd809e34a15d02f72a0f52d53d3ebb",
+          "size": 4164
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "42d1a69ed2b91a51928a711aa228ed9f3dc021c6d359a3e9c4f37eb1d20f80bd",
+          "size": 763
+        }
+      ]
+    },
+    {
+      "id": "tts-kokoro-en",
+      "name": "kokoro-en-v0_19",
+      "kind": "tts",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2",
+        "sha256": "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7",
+        "size": 319625534
+      },
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "size": 11358
+        },
+        {
+          "path": "README.md",
+          "sha256": "5a6302820ea002390e8da7219b7b03d18fdf8cfd1179440ca739a1504cef95d5",
+          "size": 135
+        },
+        {
+          "path": "model.onnx",
+          "sha256": "10ff414106a038ce7e9e0126c6461e4dc8a86efaa89dc91d2009d69fe635e339",
+          "size": 345555491
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "4f31c71282d14af4e926cd12462078fe9d20d00c589e63fe2750a8f56d6d7f7b",
+          "size": 1078
+        },
+        {
+          "path": "voices.bin",
+          "sha256": "a372c67b056ef0b695c375d39b99630d23fb07ad4c8d87aa32a19a62fca523ad",
+          "size": 5755904
+        }
+      ]
+    },
+    {
+      "id": "tts-matcha-zh",
+      "name": "matcha-icefall-zh-baker",
+      "kind": "tts",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
+        "sha256": "20de2ec034b55562609d6362771c934905dfe11d0f41ec103d593427ad9a7efb",
+        "size": 75463442
+      },
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "d47ef70781df15845b6f28c6c071dee9e51b52c36797a8130a620c5c8895929c",
+          "size": 370
+        },
+        {
+          "path": "date.fst",
+          "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718",
+          "size": 59154
+        },
+        {
+          "path": "lexicon.txt",
+          "sha256": "38b886d46aefa50da6322a64d72fd595d5f4fae1051adb160d647541b1e0a4a2",
+          "size": 1363705
+        },
+        {
+          "path": "model-steps-3.onnx",
+          "sha256": "ef7ebdf5987e16a5836136a51d6f3560ca997ffd33d06a40daab5af92b4b86e5",
+          "size": 75624611
+        },
+        {
+          "path": "number.fst",
+          "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd",
+          "size": 64482
+        },
+        {
+          "path": "phone.fst",
+          "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7",
+          "size": 88630
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "56209b2bf609d5ac1d66ede6dae7bf5254bd3f8aa24c4a6823713d5b884d87ba",
+          "size": 19591
+        },
+        {
+          "path": "vocos-22khz-univ.onnx",
+          "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+          "size": 53884024
+        }
+      ],
+      "extras": [
+        {
+          "path": "vocos-22khz-univ.onnx",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+          "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+          "size": 53884024
+        }
+      ]
+    },
+    {
+      "id": "tts-kokoro-multi",
+      "name": "kokoro-multi-lang-v1_0",
+      "kind": "tts",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
+        "sha256": "c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298",
+        "size": 349906910
+      },
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "size": 11358
+        },
+        {
+          "path": "README.md",
+          "sha256": "87359cd32dfdff6dfeb16633b5a116aee3b9ac69dec3302378270a2cab9885b1",
+          "size": 730
+        },
+        {
+          "path": "date-zh.fst",
+          "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718",
+          "size": 59154
+        },
+        {
+          "path": "lexicon-gb-en.txt",
+          "sha256": "c4cbb37316f62210dff52718a7afcaae24f50c032cc75ab47ae67b831d1049e7",
+          "size": 6366635
+        },
+        {
+          "path": "lexicon-us-en.txt",
+          "sha256": "7daaab53a181be9885b853a8582bf1838186317e5dadacbcef9c426d6fa0da14",
+          "size": 5956885
+        },
+        {
+          "path": "lexicon-zh.txt",
+          "sha256": "902bc2d20ac7c449c5ecbbbb23c89d12119c03ed5b8ed27f114f0260c9e35229",
+          "size": 2365182
+        },
+        {
+          "path": "model.onnx",
+          "sha256": "b40f62b166ac8164b0627ef48a0b358eda0985e272fb03ef5252e7206305da11",
+          "size": 325560556
+        },
+        {
+          "path": "number-zh.fst",
+          "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd",
+          "size": 64482
+        },
+        {
+          "path": "phone-zh.fst",
+          "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7",
+          "size": 88630
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "6ebb6bb288f20f3ae8d004d3c2ca27697da27c037d75e81a60e2a6a663f95425",
+          "size": 687
+        },
+        {
+          "path": "voices.bin",
+          "sha256": "1c5a5b983d3d50d8586d437a51f3faa2da7919ce76a013c081e65671a3447c29",
+          "size": 28200960
+        }
+      ]
+    },
+    {
+      "id": "kws-en",
+      "name": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      "kind": "kws",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2",
+        "sha256": "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a",
+        "size": 17626723
+      },
+      "files": [
+        {
+          "path": "bpe.model",
+          "sha256": "c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24",
+          "size": 244837
+        },
+        {
+          "path": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a",
+          "size": 277985
+        },
+        {
+          "path": "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "f61ebd3eed3773a44d088d53dfae92dbb6aec4839f4dcaee2d402414741663a3",
+          "size": 1063189
+        },
+        {
+          "path": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678",
+          "size": 4807159
+        },
+        {
+          "path": "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "063fbc1aeae8a9b574607a331a00e60371846ef9eaa3c1d9ea48176665dfc693",
+          "size": 12174219
+        },
+        {
+          "path": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c",
+          "size": 163380
+        },
+        {
+          "path": "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "0d7a37e749d8055223029318d6ffae82db1dae2d315d0892a68ba5dad17c1d2d",
+          "size": 642462
+        },
+        {
+          "path": "keywords.txt",
+          "sha256": "b1740c4925d7c83337de2cffa04e8d35450fab2af8f583e65c54aad6257c4bd6",
+          "size": 184
+        },
+        {
+          "path": "keywords_raw.txt",
+          "sha256": "f8d067c3c84bcf9240988b17bd28ce7a21e86f5ad9c01a4f1d6e052f9c38053d",
+          "size": 102
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+          "size": 212044
+        },
+        {
+          "path": "test_wavs/1.wav",
+          "sha256": "5143a6ba93c4b274e2c4ac22deb75c2c48936c853f0519add1de828b6c79cc5a",
+          "size": 534924
+        },
+        {
+          "path": "test_wavs/test_keywords.txt",
+          "sha256": "fd9c3b504ab922bc96ce8613eff02193f8a5526fcf74a14df436c7af74ad649d",
+          "size": 52
+        },
+        {
+          "path": "test_wavs/trans.txt",
+          "sha256": "55ca91f3ee53c324b2f802f63c50cacc8931da846c4aaa35f115680201ff904b",
+          "size": 367
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53",
+          "size": 5006
+        }
+      ]
+    },
+    {
+      "id": "kws-zh",
+      "name": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+      "kind": "kws",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2",
+        "sha256": "b2f7c89690dc8ce4c6ed6afeab7cd800c36ad1421fb6b6302b4a4b194cf7f35f",
+        "size": 32654866
+      },
+      "files": [
+        {
+          "path": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "ed83454004d5bd16d831eaf00adcd181ed7734886aab6ef440f3ffa5aa3cfe3b",
+          "size": 181069
+        },
+        {
+          "path": "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "fb581d6734511676e246e0dff2fea01b31b0913176cb3ca64576dbab0a177774",
+          "size": 675349
+        },
+        {
+          "path": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "dd784973fc9d2fabb3b800d6dcd20fc3b0ca84f8e2415afe54b032878e447f4d",
+          "size": 4777666
+        },
+        {
+          "path": "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "859cd6decc23f35e6ddb3a6ddb7172a57f6de7b54288728c2433ab94b7635c59",
+          "size": 12152560
+        },
+        {
+          "path": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "f79760052b87239e325f0567c752ad3130b30d92effb847d4307743c20c59a24",
+          "size": 65242
+        },
+        {
+          "path": "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+          "sha256": "fcf43a2edf687e2e1bc8a2b2cf53129d3b0d693d90dcc4202e2d53b43db6c43c",
+          "size": 253410
+        },
+        {
+          "path": "keywords.txt",
+          "sha256": "46de8c6834da501b0a2e39a2691b17fd74ea707930dd30fbc7cc69b3d396b93f",
+          "size": 286
+        },
+        {
+          "path": "keywords_raw.txt",
+          "sha256": "75b5846317e6c90d37da2c8ba5d05e6f5688eca20c7bca1ad4d0372795339ace",
+          "size": 101
+        },
+        {
+          "path": "test_wavs/0.wav",
+          "sha256": "668bf8df51a10027b84d5d8816a1ce11ae93545538dc05cfe2aa6811d399c250",
+          "size": 179646
+        },
+        {
+          "path": "test_wavs/1.wav",
+          "sha256": "30edbabea84ca4c076f5b43bb44495f436f6711319c32a200d3fc5c67c1fee1d",
+          "size": 164976
+        },
+        {
+          "path": "test_wavs/2.wav",
+          "sha256": "04a579c23bdd6de049814f1cbfb470d735d7747ba37eb0a92d813c89da942706",
+          "size": 144856
+        },
+        {
+          "path": "test_wavs/3.wav",
+          "sha256": "710e79fb3450042be50bb2f6432a2a549b53577aea041a577e53a926fcabb614",
+          "size": 257006
+        },
+        {
+          "path": "test_wavs/4.wav",
+          "sha256": "d46ca3a2ce52b5059f3d84e2cfdc62907e8579faa7078b1becaea614dd41b35d",
+          "size": 147216
+        },
+        {
+          "path": "test_wavs/5.wav",
+          "sha256": "55321b6d1ab4bd9a16928957a52cf943b2ae864543cca7f39e9844b4889e9bb8",
+          "size": 132938
+        },
+        {
+          "path": "test_wavs/6.wav",
+          "sha256": "f5da5689f1960431a53855d7fbe78c9ab0b73e5495ffba631cd43458225d9039",
+          "size": 113518
+        },
+        {
+          "path": "test_wavs/test_keywords.txt",
+          "sha256": "6af1addaeb80ddb6dc8576e11dcb5a4d17bc02629e6561ca6b2aadb5ec05e27d",
+          "size": 222
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "72316508d9119696145abc6f1f8cdc46287535c34e5ce7e595f845cb1499cf2e",
+          "size": 1627
+        }
+      ]
+    },
+    {
+      "id": "kws-zh-en",
+      "name": "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+      "kind": "kws",
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2",
+        "sha256": "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6",
+        "size": 32885699
+      },
+      "files": [
+        {
+          "path": "decoder-epoch-13-avg-2-chunk-16-left-64.onnx",
+          "sha256": "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21",
+          "size": 759829
+        },
+        {
+          "path": "en.phone",
+          "sha256": "f7000ec3a90544c0c7c16090d8951779c2b322e14dad5006290f498567d439ea",
+          "size": 3330061
+        },
+        {
+          "path": "encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48",
+          "size": 4599656
+        },
+        {
+          "path": "encoder-epoch-13-avg-2-chunk-16-left-64.onnx",
+          "sha256": "540ff509ed89bd22afe04bf7049a54bb1c95c6d8a18742ea9691910cdb5f859e",
+          "size": 11976272
+        },
+        {
+          "path": "joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+          "sha256": "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1",
+          "size": 86629
+        },
+        {
+          "path": "joiner-epoch-13-avg-2-chunk-16-left-64.onnx",
+          "sha256": "76f7a24ed0c08633af14b2ee377f747af880d3b65eeba2cd3f31f3380fb73e8d",
+          "size": 338154
+        },
+        {
+          "path": "test_wavs/en_0.wav",
+          "sha256": "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f",
+          "size": 212044
+        },
+        {
+          "path": "test_wavs/en_1.wav",
+          "sha256": "5143a6ba93c4b274e2c4ac22deb75c2c48936c853f0519add1de828b6c79cc5a",
+          "size": 534924
+        },
+        {
+          "path": "test_wavs/en_trans.txt",
+          "sha256": "55ca91f3ee53c324b2f802f63c50cacc8931da846c4aaa35f115680201ff904b",
+          "size": 367
+        },
+        {
+          "path": "test_wavs/keywords.txt",
+          "sha256": "4878b5c2cddd6605d228877a196137e2412f0fcda1af44a524d7265a1547835c",
+          "size": 284
+        },
+        {
+          "path": "test_wavs/keywords_raw.txt",
+          "sha256": "5b1ade36d81417b3479410134a0fb1f3b099b7cac4dea42f6939421902b59d19",
+          "size": 208
+        },
+        {
+          "path": "test_wavs/zh_0.wav",
+          "sha256": "668bf8df51a10027b84d5d8816a1ce11ae93545538dc05cfe2aa6811d399c250",
+          "size": 179646
+        },
+        {
+          "path": "test_wavs/zh_1.wav",
+          "sha256": "30edbabea84ca4c076f5b43bb44495f436f6711319c32a200d3fc5c67c1fee1d",
+          "size": 164976
+        },
+        {
+          "path": "test_wavs/zh_2.wav",
+          "sha256": "04a579c23bdd6de049814f1cbfb470d735d7747ba37eb0a92d813c89da942706",
+          "size": 144856
+        },
+        {
+          "path": "test_wavs/zh_3.wav",
+          "sha256": "710e79fb3450042be50bb2f6432a2a549b53577aea041a577e53a926fcabb614",
+          "size": 257006
+        },
+        {
+          "path": "test_wavs/zh_4.wav",
+          "sha256": "d46ca3a2ce52b5059f3d84e2cfdc62907e8579faa7078b1becaea614dd41b35d",
+          "size": 147216
+        },
+        {
+          "path": "test_wavs/zh_5.wav",
+          "sha256": "55321b6d1ab4bd9a16928957a52cf943b2ae864543cca7f39e9844b4889e9bb8",
+          "size": 132938
+        },
+        {
+          "path": "test_wavs/zh_6.wav",
+          "sha256": "f5da5689f1960431a53855d7fbe78c9ab0b73e5495ffba631cd43458225d9039",
+          "size": 113518
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0",
+          "size": 1928
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_audio, read_wav_bytes, server_request]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      # taiki-e/install-action@cargo-fuzz installed nothing, so build it.
+      - run: cargo install cargo-fuzz --locked
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      # The corpus is gitignored and comes from the cache, which is empty
+      # until a run finishes; the seeds are fixtures/audio.
+      - run: mkdir -p fuzz/corpus/${{ matrix.target }}
+      # rust-toolchain.toml pins a stable release; cargo-fuzz needs nightly.
+      # Each call must finish within 2 s, and allocations are capped at
+      # max_duration x 48 kHz x 4 B x 2 = 460 MB.
+      - run: >
+          cargo +nightly fuzz run ${{ matrix.target }}
+          fuzz/corpus/${{ matrix.target }} fixtures/audio
+          -- -max_total_time=600 -timeout=2 -malloc_limit_mb=460 -rss_limit_mb=1024
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts

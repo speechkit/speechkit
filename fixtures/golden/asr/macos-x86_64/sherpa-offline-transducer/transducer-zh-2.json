@@ -1,0 +1,13 @@
+{
+  "audio": "test_wavs/2.wav",
+  "model": "transducer-zh",
+  "partials": [],
+  "segments": [
+    {
+      "end_ms": 4512,
+      "start_ms": 390,
+      "text": "深入地分析这一次全球金融动荡背后的根源啊"
+    }
+  ],
+  "text": "深入地分析这一次全球金融动荡背后的根源啊"
+}
