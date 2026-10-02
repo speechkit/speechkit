@@ -92,6 +92,15 @@ async fn pcm_and_wav_success() {
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(&wav[4..8], &[0xFF; 4], "placeholder size");
     assert!(close_to_expected((wav.len() - 44) / 2));
+
+    // Missing and null optional fields keep the existing defaults.
+    let (status, wav) = send(
+        &app,
+        post(&json!({"input": TEXT, "response_format": null, "speed": null, "voice": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&wav[..4], b"RIFF");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -101,6 +110,10 @@ async fn bad_requests_are_400() {
         json!({"input": "x".repeat(4097)}),
         json!({"input": "hi", "response_format": "mp3"}),
         json!({"input": "hi", "response_format": "opus"}),
+        json!({"input": "hi", "response_format": 123}),
+        json!({"input": "hi", "response_format": true}),
+        json!({"input": "hi", "response_format": []}),
+        json!({"input": "hi", "response_format": {}}),
         json!({"input": "hi", "voice": "robot"}),
         json!({"input": "hi", "speed": 9.0}),
         json!({"voice": "alpha"}),

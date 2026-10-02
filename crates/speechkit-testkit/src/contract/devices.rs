@@ -415,7 +415,7 @@ pub fn d04_stop_returns_at_once() {
 
 /// D-05: a lost device ends every reader at its last sample, and each
 /// session finishes with what it heard; a lost speaker fails every queued
-/// playback.
+/// playback and closes its sink to further samples.
 pub fn d05_device_lost() {
     let (capture, mic) = capture(Duration::from_secs(1));
     let (engine, stats) = recorder();
@@ -465,6 +465,24 @@ pub fn d05_device_lost() {
         speaker.play(AudioBuffer::new(RATE, ramp(0, 10))).is_err(),
         "a lost speaker plays nothing more"
     );
+
+    let (speaker, fake) = Speaker::fake(RATE);
+    let (playing_sink, playing) = speaker.sink(RATE).expect("first sink");
+    let (queued_sink, queued) = speaker.sink(RATE).expect("queued sink");
+    // The first sink stays open, so the second cannot start playing.
+    fake.lose();
+    for (sink, playback) in [(playing_sink, playing), (queued_sink, queued)] {
+        assert!(
+            playback
+                .finish(SETTLE)
+                .expect_err("device lost")
+                .retryable()
+        );
+        assert!(matches!(
+            sink.push(&[0.1], SETTLE),
+            Err(SpeechError::Closed)
+        ));
+    }
 }
 
 /// What the fake speaker has played of a [`FakeTts`] synthesis of `text`.

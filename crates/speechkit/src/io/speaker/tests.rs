@@ -214,6 +214,64 @@ fn a_full_sink_waits_until_its_deadline() {
 }
 
 #[test]
+fn stopped_and_dropped_playbacks_close_current_and_queued_sinks() {
+    for queued in [false, true] {
+        for action in ["playback", "speaker", "drop"] {
+            let (speaker, fake) = Speaker::fake(RATE);
+            let (first_sink, first) = speaker.sink(RATE).unwrap();
+            first_sink.push(&vec![0.2; frames(100)], ms(1_000)).unwrap();
+            play_filled(&fake, &speaker.shared, frames(50) as u64);
+            // An open first sink keeps the second sound queued.
+            let (sink, playback) = if queued {
+                speaker.sink(RATE).unwrap()
+            } else {
+                (first_sink, first)
+            };
+            match action {
+                "playback" => playback.stop(),
+                "speaker" => speaker.stop(),
+                "drop" => drop(speaker),
+                _ => unreachable!(),
+            }
+            let result = playback.finish(ms(1_000));
+            if action == "drop" {
+                assert!(matches!(result, Err(SpeechError::Closed)), "{result:?}");
+            } else {
+                result.unwrap();
+            }
+            assert!(
+                eventually(|| matches!(sink.push(&[0.1], ms(10)), Err(SpeechError::Closed))),
+                "queued={queued}, action={action}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stopping_a_queued_sink_wakes_a_full_queue_producer() {
+    let (speaker, _fake) = Speaker::fake(RATE);
+    let (_first_sink, _first) = speaker.sink(RATE).unwrap();
+    let (sink, playback) = speaker.sink(RATE).unwrap();
+    sink.push(&vec![0.1; frames(2_000)], ms(1_000)).unwrap();
+    std::thread::scope(|scope| {
+        let (started, ready) = std::sync::mpsc::channel();
+        let (send, result) = std::sync::mpsc::channel();
+        sink.notify_on_push_wait(started);
+        scope.spawn(move || {
+            send.send(sink.push(&[0.1], ms(2_000))).unwrap();
+        });
+        ready.recv_timeout(ms(1_000)).unwrap();
+        // The signal is sent with the channel locked. Stopping must acquire
+        // that same lock, so it cannot close the channel before push waits.
+        playback.stop();
+        assert!(matches!(
+            result.recv_timeout(ms(1_000)).unwrap(),
+            Err(SpeechError::Closed)
+        ));
+    });
+}
+
+#[test]
 fn a_lost_device_fails_every_playback() {
     let (speaker, fake) = Speaker::fake(RATE);
     let playing = speaker.play(tone(0.1, 400)).unwrap();

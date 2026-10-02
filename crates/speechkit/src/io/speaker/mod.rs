@@ -485,8 +485,8 @@ impl Speaker {
     pub fn stop(&self) {
         let mut queue = lock(&self.shared.queue);
         for (state, sound) in queue.waiting.drain(..) {
-            state.settle(Ok(()), Some(0));
             drop(sound);
+            state.settle(Ok(()), Some(0));
         }
         queue.stop_all = true;
         drop(queue);
@@ -717,6 +717,8 @@ impl Playback {
                 .position(|(state, _)| Arc::ptr_eq(state, &self.state));
             waiting.and_then(|index| queue.waiting.remove(index))
         };
+        let queued = removed.is_some();
+        drop(removed);
         let mut progress = self.state.lock();
         if progress.result.is_some() || progress.stop {
             return;
@@ -725,11 +727,10 @@ impl Playback {
         // stopped sound with `Ok`, and must never do that before this
         // result is in, or a `finish` that timed out would report success.
         progress.stop = true;
-        let frozen = if removed.is_some() { 0 } else { played };
+        let frozen = if queued { 0 } else { played };
         PlaybackState::settle_locked(&mut progress, result, Some(frozen));
         drop(progress);
         self.state.changed.notify_all();
-        drop(removed);
         self.shared.changed.notify_all();
     }
 
@@ -906,12 +907,9 @@ impl Player {
         if stop_all || self.current.as_ref().is_some_and(|c| c.state.is_stopped()) {
             if let Some(current) = self.current.take() {
                 self.skip_rest(&current.state, played);
+                // Dropping the sound cancels synthesis and closes its sink.
+                drop(current.sound);
                 current.state.settle(Ok(()), Some(played));
-                if let Source::Sink(channel) = &current.sound.0 {
-                    channel.end();
-                }
-                // Dropping the sound cancels its synthesis.
-                drop(current);
             }
             self.shared.expecting.store(false, Ordering::Relaxed);
         }
@@ -1095,14 +1093,13 @@ impl Player {
     fn fail_all(&mut self, error: &SpeechError) {
         let played = self.shared.played_index();
         let waiting: Vec<_> = lock(&self.shared.queue).waiting.drain(..).collect();
-        for (state, _sound) in waiting {
+        for (state, sound) in waiting {
+            drop(sound);
             state.settle(Err(error.clone()), Some(0));
         }
         if let Some(current) = self.current.take() {
+            drop(current.sound);
             current.state.settle(Err(error.clone()), Some(played));
-            if let Source::Sink(channel) = &current.sound.0 {
-                channel.end();
-            }
         }
         for state in self.tail.drain(..) {
             state.settle(Err(error.clone()), Some(played));

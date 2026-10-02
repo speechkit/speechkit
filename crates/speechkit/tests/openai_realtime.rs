@@ -51,8 +51,23 @@ async fn session(stream: tokio::net::TcpStream, mode: Mode, closed: Arc<AtomicUs
     closed.fetch_add(1, Ordering::SeqCst);
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite's handshake callback fixes the error type to an HTTP response"
+)]
 async fn serve_session(stream: tokio::net::TcpStream, mode: Mode) {
-    let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(
+        stream,
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            assert!(
+                !request.headers().contains_key("openai-beta"),
+                "GA transcription must not select the retired beta interface"
+            );
+            Ok(response)
+        },
+    )
+    .await
+    else {
         return;
     };
     let mut buffered = 0_usize;

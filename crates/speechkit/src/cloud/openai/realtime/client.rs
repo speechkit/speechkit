@@ -286,7 +286,7 @@ fn connect(
         BACKEND,
         &config.endpoint,
         &config.api_key,
-        &[("OpenAI-Beta", "realtime=v1")],
+        &[],
         config.timeout,
     )?;
     let mut conn = ws.push(session)?;

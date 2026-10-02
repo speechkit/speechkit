@@ -75,15 +75,20 @@ fn read(body: &Value, max_chars: usize) -> Result<Request, Box<Response>> {
             "`input` has {chars} characters; the limit is {max_chars}"
         )));
     }
-    let format = match body["response_format"].as_str() {
-        None | Some("wav") => Format::Wav,
-        Some("pcm") => Format::Pcm,
-        Some(other @ ("mp3" | "opus" | "aac" | "flac")) => {
+    let format = match &body["response_format"] {
+        Value::Null => "wav",
+        Value::String(format) => format.as_str(),
+        _ => return Err(bad("`response_format` must be a string")),
+    };
+    let format = match format {
+        "wav" => Format::Wav,
+        "pcm" => Format::Pcm,
+        other @ ("mp3" | "opus" | "aac" | "flac") => {
             return Err(bad(format!(
                 "response_format {other:?} is not supported; use wav or pcm"
             )));
         }
-        Some(other) => return Err(bad(format!("unknown response_format {other:?}"))),
+        other => return Err(bad(format!("unknown response_format {other:?}"))),
     };
     let speed = match &body["speed"] {
         Value::Null => 1.0,
