@@ -19,7 +19,7 @@ use crate::{Result, workspace};
 /// The MSRV, as in the workspace manifest.
 const MSRV: &str = "1.88";
 
-/// How recent the model run on `HEAD` or its parent must be.
+/// How recent the model run on `HEAD` must be.
 const MODELS_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// Runs a command in the workspace, succeeding if it exits with 0.
@@ -145,27 +145,21 @@ pub(crate) fn parse_utc(time: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
-/// Whether `models.yml` passed in the last day on `HEAD`, or on its parent
-/// when `HEAD` is a release commit that changed only the version and the
-/// changelog.
+/// Whether `models.yml` passed in the last day on the exact commit being
+/// released. A parent's run does not cover changes made by `HEAD`.
 fn models_passed_recently() -> Result {
-    let mut commits = Vec::new();
-    for rev in ["HEAD", "HEAD^"] {
-        let commit = output("git", &["rev-parse", rev])?;
-        let commit = commit.trim().to_owned();
-        if models_passed_on(&commit)? {
-            return Ok(());
-        }
-        commits.push(commit[..commit.len().min(12)].to_owned());
-    }
-    Err(format!(
-        "no successful models.yml run on {} in the last 24 hours",
-        commits.join(" or ")
-    ))
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    check_models(output, now)
 }
 
-/// Whether `models.yml` passed on `commit` in the last day.
-fn models_passed_on(commit: &str) -> Result<bool> {
+/// Checks the current commit, with command output and time supplied so
+/// release gating can be tested without GitHub or a real repository.
+fn check_models(output: impl Fn(&str, &[&str]) -> Result<String>, now: u64) -> Result {
+    let commit = output("git", &["rev-parse", "HEAD"])?;
+    let commit = commit.trim();
     let json = output(
         "gh",
         &[
@@ -180,15 +174,18 @@ fn models_passed_on(commit: &str) -> Result<bool> {
         ],
     )?;
     let runs: Vec<Run> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-    Ok(runs.iter().any(|run| {
+    if runs.iter().any(|run| {
         run.conclusion.as_deref() == Some("success")
             && parse_utc(&run.updated_at)
                 .is_some_and(|at| now.saturating_sub(at) <= MODELS_MAX_AGE.as_secs())
-    }))
+    }) {
+        Ok(())
+    } else {
+        Err(format!(
+            "no successful models.yml run on {} in the last 24 hours",
+            &commit[..commit.len().min(12)]
+        ))
+    }
 }
 
 fn read(path: &str) -> Result<String> {
@@ -330,6 +327,59 @@ pub(crate) fn release_check() -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn models_require_a_recent_success_on_head() {
+        let at = "2026-09-24T03:12:45Z";
+        let now = parse_utc(at).unwrap();
+        for (head_runs, age, accepted) in [
+            ("[]".to_owned(), 0, false),
+            (
+                format!(r#"[{{"conclusion":"failure","updatedAt":"{at}"}}]"#),
+                0,
+                false,
+            ),
+            (
+                format!(r#"[{{"conclusion":"success","updatedAt":"{at}"}}]"#),
+                0,
+                true,
+            ),
+            (
+                format!(r#"[{{"conclusion":"success","updatedAt":"{at}"}}]"#),
+                MODELS_MAX_AGE.as_secs() + 1,
+                false,
+            ),
+        ] {
+            let output = |program: &str, args: &[&str]| {
+                match program {
+                    "git" => match args {
+                        ["rev-parse", "HEAD"] => Ok("head-commit\n".into()),
+                        ["rev-parse", "HEAD^"] => Ok("parent-commit\n".into()),
+                        _ => panic!("unexpected git command: {args:?}"),
+                    },
+                    "gh" => {
+                        let commit = args.windows(2).find(|pair| pair[0] == "--commit").unwrap()[1];
+                        match commit {
+                            "head-commit" => Ok(head_runs.clone()),
+                            // The parent is always green, but must not make
+                            // an untested or failed HEAD releasable.
+                            "parent-commit" => Ok(format!(
+                                r#"[{{"conclusion":"success","updatedAt":"{at}"}}]"#
+                            )),
+                            _ => panic!("unexpected commit: {commit}"),
+                        }
+                    }
+                    _ => panic!("unexpected command: {program}"),
+                }
+            };
+            let result = check_models(output, now + age);
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "{head_runs}, age={age}: {result:?}"
+            );
+        }
+    }
 
     #[test]
     fn reads_the_workspace_version() {

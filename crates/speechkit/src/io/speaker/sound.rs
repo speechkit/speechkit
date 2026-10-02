@@ -45,6 +45,16 @@ impl Sound {
     }
 }
 
+impl Drop for Sound {
+    fn drop(&mut self) {
+        // The player owns the receiving side, including while queued.
+        // Releasing it must wake producers and refuse further samples.
+        if let Source::Sink(channel) = &self.0 {
+            channel.end();
+        }
+    }
+}
+
 impl From<TtsOutput> for Sound {
     fn from(output: TtsOutput) -> Self {
         Self(Source::Tts(output))
@@ -81,6 +91,9 @@ pub(super) struct Channel {
 
 struct ChannelState {
     samples: VecDeque<f32>,
+    /// A one-shot test signal sent under the lock before a full-queue wait.
+    #[cfg(test)]
+    push_waiting: Option<std::sync::mpsc::Sender<()>>,
     /// The sink was closed: the playback ends after what was pushed.
     closed: bool,
     /// The playback ended: pushes fail.
@@ -103,6 +116,8 @@ impl Channel {
                 .max(1),
             state: Mutex::new(ChannelState {
                 samples: VecDeque::new(),
+                #[cfg(test)]
+                push_waiting: None,
                 closed: false,
                 ended: false,
             }),
@@ -159,6 +174,12 @@ impl Sink {
         Self { channel }
     }
 
+    /// Signals the next full-queue wait while holding the channel lock.
+    #[cfg(test)]
+    pub(super) fn notify_on_push_wait(&self, sender: std::sync::mpsc::Sender<()>) {
+        lock(&self.channel.state).push_waiting = Some(sender);
+    }
+
     /// The rate of the samples it takes.
     pub fn sample_rate(&self) -> SampleRate {
         self.channel.rate
@@ -184,7 +205,13 @@ impl Sink {
         while !rest.is_empty() {
             let (mut state, _) =
                 wait_until(&channel.changed, lock(&channel.state), deadline, |state| {
-                    state.ended || state.closed || state.samples.len() < channel.capacity
+                    let ready =
+                        state.ended || state.closed || state.samples.len() < channel.capacity;
+                    #[cfg(test)]
+                    if !ready && let Some(sender) = state.push_waiting.take() {
+                        let _ = sender.send(());
+                    }
+                    ready
                 });
             if state.ended || state.closed {
                 return Err(SpeechError::Closed);

@@ -24,6 +24,9 @@ const HANDSHAKE_PREFIX: &[u8] = b"SPEECHKIT-WORKER-";
 /// The largest frame accepted: 64 MiB.
 const MAX_FRAME: u32 = 64 * 1024 * 1024;
 
+/// The most startup output read while looking for the handshake.
+const MAX_HANDSHAKE: u64 = 1024 * 1024;
+
 /// A request from the parent. A worker serves one stream at a time, and
 /// answers each request with `Done` or `Error`, after every event the
 /// request produced.
@@ -333,9 +336,15 @@ pub(super) fn read_frame<T: for<'de> Deserialize<'de>>(
 /// `UnexpectedEof` if the input ends first, or `InvalidData` for another
 /// version's handshake or too much noise.
 pub(super) fn skip_to_handshake(input: &mut impl BufRead) -> io::Result<()> {
-    let mut skipped = 0_usize;
+    let mut input = input.take(MAX_HANDSHAKE);
     let mut line = Vec::new();
     loop {
+        if input.limit() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no worker handshake within 1 MiB",
+            ));
+        }
         line.clear();
         let read = input.read_until(b'\n', &mut line)?;
         if read == 0 {
@@ -359,13 +368,6 @@ pub(super) fn skip_to_handshake(input: &mut impl BufRead) -> io::Result<()> {
                     String::from_utf8_lossy(&line[start..]).trim_end(),
                     String::from_utf8_lossy(HANDSHAKE).trim_end()
                 ),
-            ));
-        }
-        skipped += read;
-        if skipped > 1024 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "no worker handshake",
             ));
         }
     }
@@ -418,6 +420,32 @@ mod tests {
         let old =
             skip_to_handshake(&mut io::Cursor::new(b"SPEECHKIT-WORKER-3\n".to_vec())).unwrap_err();
         assert!(old.to_string().contains("SPEECHKIT-WORKER-3"), "{old}");
+    }
+
+    #[test]
+    fn handshake_budget_bounds_single_lines_and_total_noise() {
+        for noise in *b"x\n" {
+            let mut bytes = vec![noise; usize::try_from(MAX_HANDSHAKE).unwrap() + 1];
+            bytes.extend_from_slice(HANDSHAKE);
+            let mut input = io::Cursor::new(bytes);
+            let error = skip_to_handshake(&mut input).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(input.position(), MAX_HANDSHAKE);
+        }
+    }
+
+    #[test]
+    fn handshake_at_budget_leaves_the_first_frame_intact() {
+        let mut bytes = vec![b'x'; usize::try_from(MAX_HANDSHAKE).unwrap() - HANDSHAKE.len()];
+        bytes.extend_from_slice(HANDSHAKE);
+        write_frame(&mut bytes, &Response::Done).unwrap();
+        let mut input = io::Cursor::new(bytes);
+        skip_to_handshake(&mut input).unwrap();
+        assert_eq!(input.position(), MAX_HANDSHAKE);
+        assert_eq!(
+            read_frame::<Response>(&mut input).unwrap(),
+            Some(Response::Done)
+        );
     }
 
     #[test]
