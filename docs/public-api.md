@@ -860,7 +860,7 @@ the cases where these contracts are easiest to get wrong:
 
 Imports are left out. Each scenario runs in a function that returns
 `Result<(), Box<dyn Error>>`, or in an `async fn` for the two servers. Names
-such as `ui`, `brain`, and `llm` are application code.
+such as `ui`, `worker`, `brain`, and `llm` are application code.
 
 ### 1. Dictation input method (voice IME)
 
@@ -881,6 +881,72 @@ listening.stop();                                   // in a key-up handler: retu
 let transcript = listening.finish(Duration::from_secs(5))?;   // the tail, bounded
 ui.insert(&transcript.text());
 ```
+
+Toggle-to-talk. The first press starts listening; the second stops it. Keep
+an `Option<(u64, Listening)>` named `active` in the UI state, initially `None`.
+The number identifies a round and is never reused. Both key-down and a
+self-ended session use this helper:
+
+```rust
+fn finish_dictation(active: &mut Option<(u64, Listening)>, worker: &Worker) {
+    if let Some((id, listening)) = active.take() {
+        listening.stop();                           // returns at once
+        let deadline = Deadline::from(Duration::from_secs(5));
+        worker.submit(id, move || listening.finish(deadline));
+    }
+}
+```
+
+Run this handler on key-down, ignoring auto-repeat; key-up does nothing:
+
+```rust
+if active.is_some() {
+    finish_dictation(&mut active, &worker);
+} else {
+    let listening = mic.listen(&engine, AsrOptions::default().with_hints(ui.contact_names()))?;
+    let id = ui.begin_dictation();
+    ui.forward_updates(id, listening.updates());
+    active = Some((id, listening));
+}
+```
+
+`ui.begin_dictation` allocates the ID, remembers the insertion target, and
+reserves its place in the result order. Call it only after `mic.listen`
+succeeds, so a failed start leaves `active` empty without reserving a
+result. `ui.forward_updates` reads updates off the UI thread and posts
+`(id, update)` to it. On the UI thread, handle a `Closed` update like this:
+
+```rust
+if matches!(update, AsrUpdate::Closed(_))
+    && active.as_ref().is_some_and(|(current, _)| *current == id)
+{
+    finish_dictation(&mut active, &worker);
+}
+```
+
+Taking `active` schedules a round's finish only once. A late `Closed`
+from a stopped round cannot clear a newer round. Partial text and meters
+should also update only the matching active round. Do not insert text
+from `Closed`: the worker is the sole source of completion results.
+
+`worker.submit` runs the closure off the UI thread and posts `(id, result)`
+back to it. It must accept and promptly dispatch each submitted task; the
+five-second deadline starts before queueing. The result handler is:
+
+```rust
+ui.complete_dictation(id, result);
+```
+
+`ui.complete_dictation` accepts each pending ID once, holds results that
+arrive out of order, and delivers them in start order to their remembered
+targets, inserting the transcript or showing the failure. A failure also
+releases its place in the order. This handler never changes `active`.
+
+A new round may start while an older one finishes. Each gets a fresh
+listening; unfinished backend work still holds an engine slot. When all
+slots are busy, `mic.listen` waits for one in the background while holding
+audio, up to the listening's backlog limit. Handle any eventual failure
+through the same result path.
 
 Hands-free. There is no key; a pause ends the dictation:
 
