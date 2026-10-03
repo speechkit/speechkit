@@ -31,7 +31,7 @@ use std::{
 
 use speechkit::{
     SampleRate, Secret, SpeechError,
-    asr::{AsrEngine, AsrOptions, AsrUpdate, LiveTranscript, Transcript},
+    asr::{AsrEngine, AsrOptions, AsrResult, AsrUpdate, AsrUpdates, LiveTranscript, Transcript},
     audio::{self, DecodeLimits},
     cloud::{CloudRuntime, OpenAiRealtime, OpenAiRealtimeConfig},
     io::{CaptureOptions, ListenOptions, Microphone, Playback, Speaker, WakeUpdate},
@@ -40,6 +40,9 @@ use speechkit::{
     tts::{TtsEngine, TtsOptions, TtsUpdate},
     wake::WakeWordModel,
 };
+
+#[path = "support/toggle_to_talk.rs"]
+mod toggle_to_talk;
 
 // ---- The application's own code, stubbed.
 
@@ -62,6 +65,17 @@ impl Ui {
     fn offer(&self, _what: &str) {}
     fn enable_gpu(&self, _on: bool) {}
     fn add_microphone(&self, _name: &str, _is_default: bool) {}
+    fn begin_dictation(&self) -> u64 {
+        0
+    }
+    fn forward_updates(&self, _id: u64, _updates: AsrUpdates) {}
+    fn complete_dictation(&self, _id: u64, _result: AsrResult) {}
+}
+
+struct Worker;
+
+impl Worker {
+    fn submit(&self, _id: u64, _finish: impl FnOnce() -> AsrResult + Send + 'static) {}
 }
 
 struct Panel;
