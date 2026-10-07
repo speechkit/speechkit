@@ -21,6 +21,8 @@ In CI, a cache that restores `target/` without the downloaded libraries leaves a
 
 Every loader checks the directory's layout, file names, and non-empty files before it calls into sherpa-onnx, and reports mistakes as `SpeechError::InvalidModel`.
 
+FunASR Nano INT8 can return empty text or unrelated phrases on x86 CPUs affected by U8S8 saturation. The [FunASR Nano troubleshooting guide](https://github.com/speechkit/speechkit/blob/master/docs/funasr-nano.md) explains how to convert the tested encoder to U8U8 offline and verify it with existing test audio.
+
 ## Corrupt models abort the process
 
 A model file with the right name but corrupt content is loaded by the native library, which **aborts the whole process** (SIGABRT) instead of returning an error. This holds for recognizers, the VAD, and punctuation models (see `tests/sherpa_corrupt_model.rs`). speechkit cannot catch an abort.
