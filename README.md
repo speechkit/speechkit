@@ -26,6 +26,10 @@ speechkit is not affiliated with Yandex SpeechKit.
 
 Each rule is a named test in `speechkit-testkit`, run against every backend and device. [docs/guide.md](docs/guide.md) walks through eleven applications, from a dictation input method to a voice agent the user can interrupt.
 
+For FunASR Nano INT8 returning empty text or unrelated phrases on some x86 CPUs,
+see the [model troubleshooting guide](docs/funasr-nano.md) and its offline
+conversion script.
+
 ## Crates
 
 | Crate | Contents |
