@@ -15,7 +15,7 @@ use speechkit::{
     asr::{AsrEngine, AsrOptions},
     tts::{TtsEngine, TtsOptions},
 };
-use speechkit_testkit::{cer::cer, gates::model_dir, secs};
+use speechkit_testkit::{gates::model_dir, metrics::cer, secs};
 
 const ENGLISH: &[&str] = &[
     "The quick brown fox jumps over the lazy dog.",

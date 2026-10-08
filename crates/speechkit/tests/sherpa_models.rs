@@ -37,9 +37,9 @@ use speechkit::{
 };
 use speechkit_testkit::{
     asr::Collected,
-    cer::cer,
     contract::asr::{check_activity, run_asr_contract},
     gates::{large_model_tier, model_dir},
+    metrics::cer,
     secs,
 };
 

@@ -3867,6 +3867,7 @@ version = "0.5.0"
 dependencies = [
  "bzip2 0.6.1",
  "clap",
+ "flate2",
  "reqwest",
  "serde",
  "serde_json",
