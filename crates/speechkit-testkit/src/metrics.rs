@@ -83,9 +83,12 @@ pub fn normalize(text: &str) -> Vec<char> {
 pub fn normalize_words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
-    for c in text.chars().flat_map(char::to_lowercase) {
+    // Filter before lowercasing, as `normalize` does: a lowercase form
+    // can hold a combining mark ("İ" is "i" and U+0307) that must not
+    // split the word.
+    for c in text.chars() {
         if c.is_alphanumeric() {
-            current.push(c);
+            current.extend(c.to_lowercase());
         } else if !current.is_empty() {
             words.push(std::mem::take(&mut current));
         }
@@ -241,6 +244,14 @@ mod tests {
         assert_eq!(normalize_words("今天天气 很好"), ["今天天气", "很好"]);
         assert_eq!(normalize_words("don't stop"), ["don", "t", "stop"]);
         assert_eq!(normalize_words(""), Vec::<String>::new());
+        assert_eq!(normalize_words("İstanbul"), ["i\u{307}stanbul"]);
+        assert_eq!(
+            normalize_words("İstanbul")
+                .concat()
+                .chars()
+                .collect::<Vec<_>>(),
+            normalize("İstanbul")
+        );
     }
 
     #[test]

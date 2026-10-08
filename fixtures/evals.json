@@ -1,5 +1,5 @@
 {
-  "comment": "Evaluation corpora, fetched only by `cargo xtask fetch-evals`, never by the nightly Models workflow. Same shape as fixtures/manifest.json; `include` lists the archive members to unpack (as path prefixes), `nested` unpacks members that are themselves tarballs. AISHELL-1 ships one tar per speaker with the split self-described inside each (test/S07xx/...); only the 20 test speakers are included, so the training data is never written to disk. The full archive is still downloaded, because the sha256 check needs every byte.",
+  "comment": "Evaluation corpora, fetched only by `cargo xtask fetch-evals`, never by the nightly Models workflow. Same shape as fixtures/manifest.json; `include` lists the archive members to unpack (as path prefixes), `nested` unpacks members that are themselves tarballs. AISHELL-1 ships one tar per speaker with the split self-described inside each (test/S07xx/...); only the 20 test speakers are included, so the training data is never written to disk. The full archive is still downloaded, because the sha256 check needs every byte, but it is unpacked as it streams in and never stored.",
   "evals": [
     {
       "id": "aishell-1",

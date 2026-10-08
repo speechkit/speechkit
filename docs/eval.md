@@ -53,12 +53,14 @@ self-described inside each (`test/S0764/...`), so the entry uses
 `nested` to unpack those in place and `include` to carry only the 20
 test speakers listed in `fixtures/evals.json` — 7176 utterances, about
 10 hours — never writing the training data. The full 15.6 GB archive is
-still downloaded, because the sha256 check needs every byte. After
-fetching:
+still downloaded, because the sha256 check needs every byte, but it is
+hashed and unpacked as it streams in and never stored: the fetch needs
+about 1.1 GB of disk, and a re-fetch downloads it all again. Changing
+`include` triggers a re-fetch. After fetching:
 
 ```
-$SPEECHKIT_EVAL_AISHELL_1/data_aishell/wav/test/S0764/BAC009S0764W0121.wav
-$SPEECHKIT_EVAL_AISHELL_1/data_aishell/transcript/aishell_transcript_v0.8.txt
+$SPEECHKIT_EVAL_AISHELL_1/wav/test/S0764/BAC009S0764W0121.wav
+$SPEECHKIT_EVAL_AISHELL_1/transcript/aishell_transcript_v0.8.txt
 ```
 
 The transcript file maps every utterance ID to its reference text, one
@@ -81,7 +83,7 @@ ASCEND both require a license application. Until one is licensed:
 
 ## Models
 
-The lineup in `crates/speechkit/tests/eval_asr.rs` has the small
+The lineup in `crates/speechkit/tests/sherpa_eval.rs` has the small
 published models of `fixtures/manifest.json` — fetched by
 `fetch-fixtures` — and a large tier the manifest does not carry.
 Download that tier by hand from the
@@ -104,14 +106,18 @@ a published number was measured on.
 
 ## The harness
 
-`crates/speechkit/tests/eval_asr.rs` runs the evaluation through
+`crates/speechkit/tests/sherpa_eval.rs` runs the evaluation through
 `AsrEngine` end to end — decode, resample, VAD segmentation,
 endpointing — not straight to sherpa-onnx, because those stages change
 the transcript and have knobs of their own:
 
 ```sh
-cargo test -p speechkit --all-features --test eval_asr -- --ignored --nocapture
+cargo test --workspace --all-features --test sherpa_eval -- --ignored --nocapture
 ```
+
+As with every `--all-features` test, the sherpa-onnx library must be on
+the search path (`DYLD_FALLBACK_LIBRARY_PATH=$PWD/target/debug` on macOS,
+`LD_LIBRARY_PATH` on Linux).
 
 Every model in the test's lineup whose `SPEECHKIT_MODEL_<ID>` is set
 joins the run; the rest print a skip note. It scores the first
@@ -120,8 +126,9 @@ default; raise it toward 359 for the full split when a number matters)
 against the human transcripts and prints the corpus CER with its
 substitution, deletion, and insertion shares, the per-speaker CERs, and
 the worst utterances. A decode or recognition failure scores as an
-empty hypothesis rather than ending the run, and the test fails only on
-a session error, never on a rate.
+empty hypothesis rather than ending the run; once every model has
+reported, the test fails if any utterance failed or a test speaker is
+missing on disk. It never fails on a rate.
 
 Streaming backends are fed each utterance as one buffered push, not at
 real-time pace, so their endpointing differs from production: read

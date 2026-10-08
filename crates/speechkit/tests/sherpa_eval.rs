@@ -9,7 +9,7 @@
 //! ```sh
 //! cargo xtask fetch-evals
 //! cargo xtask fetch-fixtures --only silero-vad,sense-voice,paraformer-zh,transducer-zh,streaming-bilingual
-//! cargo test -p speechkit --all-features --test eval_asr -- --ignored --nocapture
+//! cargo test --workspace --all-features --test sherpa_eval -- --ignored --nocapture
 //! ```
 //!
 //! The large tier (funasr-nano, firered-aed, firered-ctc, qwen3-asr)
@@ -24,16 +24,23 @@
 //! matters). The subset is deterministic, so runs are comparable. The
 //! report prints the corpus CER with its substitution, deletion, and
 //! insertion shares, the per-speaker CERs, and the worst utterances.
-//! The test fails only on a session error, never on a rate.
+//! A decode or recognition failure scores as an empty hypothesis so the
+//! run goes on; once every model has reported, the test fails if any
+//! utterance failed, or if the corpus lacks test speakers. It never
+//! fails on a rate.
 //! Streaming backends are fed each utterance as one buffered push,
 //! not at real-time pace, so their endpointing differs from
 //! production: read their CER as a fast-push control, not a deployed
 //! figure. Real-time pacing is future work (docs/eval.md).
-#![expect(clippy::unwrap_used, reason = "test helpers fail the calling test")]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test helpers fail the calling test"
+)]
 
 use std::{
-    collections::BTreeMap,
-    path::PathBuf,
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -48,15 +55,33 @@ use speechkit_testkit::{
     secs,
 };
 
-/// One utterance to score: its ID, its wav, and its transcript line.
+/// The number of speakers in AISHELL-1's test split.
+const TEST_SPEAKERS: usize = 20;
+
+/// One utterance to score.
 struct Case {
     id: String,
+    speaker: String,
     wav: PathBuf,
     reference: String,
+    /// The length of `reference` after normalization.
+    reference_len: usize,
 }
 
-/// The evaluation subset: the first utterances of every test speaker,
-/// in utterance order, skipping wavs missing on disk.
+/// The entries of `dir`, sorted.
+fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}; rerun `cargo xtask fetch-evals`", dir.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// The evaluation subset: the first transcribed wavs of every test
+/// speaker on disk, in utterance order. Driven by the wavs, not the
+/// transcript (which lists train and dev too), so a speaker missing on
+/// disk fails here instead of shrinking the run.
 fn cases() -> Option<Vec<Case>> {
     let per_speaker = match std::env::var("SPEECHKIT_EVAL_UTTERANCES") {
         Err(_) => 15,
@@ -67,28 +92,48 @@ fn cases() -> Option<Vec<Case>> {
     let root = eval_dir("aishell-1")?;
     let transcript = std::fs::read_to_string(root.join("transcript/aishell_transcript_v0.8.txt"))
         .expect("the corpus entry lists the transcript, so it is present");
-    let mut by_speaker: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for line in transcript.lines() {
-        let Some((id, reference)) = line.split_once(' ') else {
-            continue;
-        };
-        // BAC009S0764W0121: corpus code, speaker, utterance.
-        assert!(id.starts_with("BAC009") && id.len() == 16, "{id}");
-        let speaker = id[6..11].to_string();
-        by_speaker
-            .entry(speaker)
-            .or_default()
-            .push((id.to_string(), reference.to_string()));
-    }
+    let references: HashMap<&str, &str> = transcript
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .collect();
+    let speakers = sorted_entries(&root.join("wav/test"));
+    assert_eq!(
+        speakers.len(),
+        TEST_SPEAKERS,
+        "{}: not every test speaker is on disk; delete it and rerun `cargo xtask fetch-evals`",
+        root.display()
+    );
     let mut cases = Vec::new();
-    for (speaker, mut utterances) in by_speaker {
-        utterances.sort_by(|a, b| a.0.cmp(&b.0));
-        for (id, reference) in utterances.into_iter().take(per_speaker) {
-            let wav = root.join(format!("wav/test/{speaker}/{id}.wav"));
-            if wav.exists() {
-                cases.push(Case { id, wav, reference });
+    let mut untranscribed = 0_usize;
+    for dir in speakers {
+        let speaker = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let wavs: Vec<_> = sorted_entries(&dir)
+            .into_iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "wav"))
+            .collect();
+        assert!(!wavs.is_empty(), "{}: no wavs", dir.display());
+        let mut taken = 0;
+        for wav in wavs {
+            if taken == per_speaker {
+                break;
             }
+            let id = wav.file_stem().unwrap().to_string_lossy().into_owned();
+            let Some(reference) = references.get(id.as_str()) else {
+                untranscribed += 1;
+                continue;
+            };
+            taken += 1;
+            cases.push(Case {
+                id,
+                speaker: speaker.clone(),
+                wav,
+                reference: (*reference).to_string(),
+                reference_len: normalize(reference).len(),
+            });
         }
+    }
+    if untranscribed > 0 {
+        eprintln!("skipped {untranscribed} wavs with no transcript line");
     }
     Some(cases)
 }
@@ -128,7 +173,9 @@ fn transcribe(engine: &AsrEngine, audio: &speechkit::AudioBuffer) -> Result<Stri
     clippy::cast_precision_loss,
     reason = "statistics over thousands of characters"
 )]
-fn evaluate(id: &str, engine: &AsrEngine, cases: &[Case]) {
+/// Scores `engine` on `cases`, prints the report, and returns the
+/// number of utterances that failed to decode or transcribe.
+fn evaluate(id: &str, engine: &AsrEngine, cases: &[Case]) -> usize {
     let started = Instant::now();
     let mut totals = Errors::default();
     let mut reference_chars = 0_usize;
@@ -163,14 +210,13 @@ fn evaluate(id: &str, engine: &AsrEngine, cases: &[Case]) {
             }
         };
         let scored = char_errors(&case.reference, &hypothesis);
-        let reference_len = normalize(&case.reference).len();
-        reference_chars += reference_len;
+        reference_chars += case.reference_len;
         totals.substitutions += scored.substitutions;
         totals.deletions += scored.deletions;
         totals.insertions += scored.insertions;
-        let speaker_score = per_speaker.entry(&case.id[6..11]).or_default();
+        let speaker_score = per_speaker.entry(&case.speaker).or_default();
         speaker_score.0 += scored.total();
-        speaker_score.1 += reference_len;
+        speaker_score.1 += case.reference_len;
         worst.push((scored.total(), case, hypothesis));
         if (n + 1) % 100 == 0 {
             eprintln!("[{id}] {}/{} utterances", n + 1, cases.len());
@@ -214,6 +260,7 @@ fn evaluate(id: &str, engine: &AsrEngine, cases: &[Case]) {
             case.id, case.reference
         );
     }
+    failures
 }
 
 #[test]
@@ -235,10 +282,18 @@ fn aishell1_accuracy() {
         ("firered-ctc", AsrFamily::FireRedCtc),
         ("qwen3-asr", AsrFamily::Qwen3Asr),
     ];
+    let mut failed = Vec::new();
     for (id, family) in lineup {
         let Some(engine) = engine(id, family) else {
             continue;
         };
-        evaluate(id, &engine, &cases);
+        let failures = evaluate(id, &engine, &cases);
+        if failures > 0 {
+            failed.push(format!("{id}: {failures}/{}", cases.len()));
+        }
     }
+    assert!(
+        failed.is_empty(),
+        "utterances failed and were scored as empty: {failed:?}"
+    );
 }
