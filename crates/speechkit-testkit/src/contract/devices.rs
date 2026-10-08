@@ -377,8 +377,9 @@ pub fn d03_wake_reservation() {
 }
 
 /// D-04: `stop()` returns at once on every handle, even while a session
-/// is still opening or a detector is busy; `finish(deadline)` bounds the
-/// rest.
+/// is still opening or a detector is busy, and a sink whose playback or
+/// speaker was stopped refuses further samples by then; `finish(deadline)`
+/// bounds the rest.
 pub fn d04_stop_returns_at_once() {
     let (capture, mic) = capture(Duration::from_secs(1));
     let gate = Gate::new();
@@ -411,6 +412,35 @@ pub fn d04_stop_returns_at_once() {
     assert!(waited < Duration::from_secs(1), "finish took {waited:?}");
     gate.release();
     first.finish(secs(10)).expect("the first listening");
+
+    for stop_speaker in [false, true] {
+        let (speaker, fake) = Speaker::fake(RATE);
+        let (playing_sink, playing) = speaker.sink(RATE).expect("first sink");
+        let (queued_sink, queued) = speaker.sink(RATE).expect("queued sink");
+        playing_sink.push(&ramp(0, ms(500)), SETTLE).expect("push");
+        // Stop the first sink while it plays, not while it is queued.
+        assert!(
+            eventually(SETTLE, || {
+                fake.play(Duration::from_millis(10));
+                playing.played() > Duration::ZERO
+            }),
+            "the first sink did not start playing"
+        );
+        let started = Instant::now();
+        if stop_speaker {
+            speaker.stop();
+        } else {
+            playing.stop();
+            queued.stop();
+        }
+        assert!(started.elapsed() < AT_ONCE, "stop blocked");
+        for sink in [playing_sink, queued_sink] {
+            assert!(
+                matches!(sink.push(&[0.1], SETTLE), Err(SpeechError::Closed)),
+                "a stopped sink refuses samples (speaker stopped: {stop_speaker})"
+            );
+        }
+    }
 }
 
 /// D-05: a lost device ends every reader at its last sample, and each

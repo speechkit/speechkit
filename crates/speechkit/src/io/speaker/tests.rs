@@ -263,16 +263,23 @@ fn stopping_a_queued_sink_wakes_a_full_queue_producer() {
     std::thread::scope(|scope| {
         let (send, result) = std::sync::mpsc::channel();
         scope.spawn(move || {
-            send.send(sink.push(&[0.1], ms(2_000))).unwrap();
+            let started = Instant::now();
+            let pushed = sink.push(&[0.1], ms(2_000));
+            send.send((started, pushed)).unwrap();
         });
-        // Give the producer time to wait on the full queue. Were it late,
-        // its push would fail at once, and the test would pass vacuously.
+        // Give the producer time to wait on the full queue.
         std::thread::sleep(ms(100));
+        let stopped = Instant::now();
         playback.stop();
-        assert!(matches!(
-            result.recv_timeout(ms(1_000)).unwrap(),
-            Err(SpeechError::Closed)
-        ));
+        let (started, pushed) = result.recv_timeout(ms(1_000)).unwrap();
+        assert!(matches!(pushed, Err(SpeechError::Closed)), "{pushed:?}");
+        // A push begun after the stop fails without waiting, and would not
+        // show the wakeup; one begun well before it was waiting.
+        assert!(
+            started + ms(50) <= stopped,
+            "the producer started {:?} before the stop; rerun on a less loaded machine",
+            stopped.saturating_duration_since(started)
+        );
     });
 }
 

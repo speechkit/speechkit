@@ -302,7 +302,7 @@ struct DeviceOutput {
 ///
 /// Silence while audio was due is counted by
 /// [`underruns`](Self::underruns) and logged at `warn`. A lost device
-/// fails every queued playback (D-05).
+/// fails every queued playback and closes its sinks (D-05).
 pub struct Speaker {
     shared: Arc<Shared>,
     output: Output,
