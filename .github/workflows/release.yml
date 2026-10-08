@@ -5,7 +5,8 @@ name: Release
 # the changelog section. The tag must match the workspace version and
 # CHANGELOG.md must date that version; run `cargo xtask release-check`
 # before tagging, since it covers what this workflow does not (semver,
-# MSRV, and a recent models.yml run).
+# MSRV, and a recent models.yml run on the release commit itself, which
+# needs `gh workflow run models.yml --ref <branch>` after pushing it).
 
 on:
   push:
