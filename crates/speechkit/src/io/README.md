@@ -74,7 +74,7 @@ fn reply(tts: &TtsEngine, tokens: impl Iterator<Item = String>, interrupted: imp
 }
 ```
 
-The speaker's output stream starts with the first sound and runs until the speaker is dropped. A player thread moves each sound into a lock-free ring buffer, and the output callback only reads it, skips the audio of stopped sounds, and publishes how far it got with the time that audio will play: no allocation, locking, or logging. Silence while a sound was due counts as an underrun, which `Speaker::underruns` counts and the player logs at `warn`. A lost device fails every queued playback.
+The speaker's output stream starts with the first sound and runs until the speaker is dropped. A player thread moves each sound into a lock-free ring buffer, and the output callback only reads it, skips the audio of stopped sounds, and publishes how far it got with the time that audio will play: no allocation, locking, or logging. Silence while a sound was due counts as an underrun, which `Speaker::underruns` counts and the player logs at `warn`. A lost device fails every queued playback and closes its sinks.
 
 `Microphone::open_default` and `Speaker::open_default` use the system's default devices. `Microphone::list` and `Speaker::list` list the others, and `Microphone::open` and `Speaker::open` take a name from those lists. A name matches exactly, then ignoring case, then as a part of a name; whichever of these first finds a device must find only one.
 
