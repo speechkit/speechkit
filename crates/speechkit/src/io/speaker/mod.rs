@@ -154,6 +154,10 @@ struct Queue {
     waiting: VecDeque<(Arc<PlaybackState>, Sound)>,
     /// `Speaker::stop` was called: the player stops what it plays.
     stop_all: bool,
+    /// The sink of the sound the player took last, so `Speaker::stop` can
+    /// refuse its pushes at once. It may have ended already; ending it
+    /// again does nothing.
+    playing_sink: Option<Arc<Channel>>,
 }
 
 impl Shared {
@@ -458,6 +462,7 @@ impl Speaker {
         }
         self.start_stream()?;
         let state = Arc::new(PlaybackState::new(sound.text()));
+        let sink = sound.channel();
         let mut queue = lock(&self.shared.queue);
         queue.waiting.push_back((state.clone(), sound));
         drop(queue);
@@ -465,6 +470,7 @@ impl Speaker {
         Ok(Playback {
             state,
             shared: self.shared.clone(),
+            sink,
         })
     }
 
@@ -487,6 +493,9 @@ impl Speaker {
         for (state, sound) in queue.waiting.drain(..) {
             drop(sound);
             state.settle(Ok(()), Some(0));
+        }
+        if let Some(sink) = queue.playing_sink.take() {
+            sink.end();
         }
         queue.stop_all = true;
         drop(queue);
@@ -693,6 +702,8 @@ impl PlaybackState {
 pub struct Playback {
     state: Arc<PlaybackState>,
     shared: Arc<Shared>,
+    /// The channel of a sink, closed as soon as the playback stops.
+    sink: Option<Arc<Channel>>,
 }
 
 impl Playback {
@@ -730,6 +741,12 @@ impl Playback {
         let frozen = if queued { 0 } else { played };
         PlaybackState::settle_locked(&mut progress, result, Some(frozen));
         drop(progress);
+        // Only after the result is in: the player must not end the sound
+        // with `Ok` first. An ended channel holds no samples but stays open
+        // to the player, which then sees the stop.
+        if let Some(sink) = &self.sink {
+            sink.end();
+        }
         self.state.changed.notify_all();
         self.shared.changed.notify_all();
     }
@@ -986,9 +1003,12 @@ impl Player {
     }
 
     fn next_sound(&mut self) {
-        let Some((state, sound)) = lock(&self.shared.queue).waiting.pop_front() else {
+        let mut queue = lock(&self.shared.queue);
+        let Some((state, sound)) = queue.waiting.pop_front() else {
             return;
         };
+        queue.playing_sink = sound.channel();
+        drop(queue);
         match Resampler::new(sound.sample_rate(), self.shared.rate) {
             Ok(resampler) => {
                 self.current = Some(Current {

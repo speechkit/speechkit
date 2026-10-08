@@ -336,14 +336,17 @@ pub(super) fn read_frame<T: for<'de> Deserialize<'de>>(
 /// `UnexpectedEof` if the input ends first, or `InvalidData` for another
 /// version's handshake or too much noise.
 pub(super) fn skip_to_handshake(input: &mut impl BufRead) -> io::Result<()> {
+    let too_much = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "no worker handshake within 1 MiB",
+        )
+    };
     let mut input = input.take(MAX_HANDSHAKE);
     let mut line = Vec::new();
     loop {
         if input.limit() == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "no worker handshake within 1 MiB",
-            ));
+            return Err(too_much());
         }
         line.clear();
         let read = input.read_until(b'\n', &mut line)?;
@@ -355,6 +358,10 @@ pub(super) fn skip_to_handshake(input: &mut impl BufRead) -> io::Result<()> {
         }
         if line.ends_with(HANDSHAKE) {
             return Ok(());
+        }
+        // The budget cut this line short: a version in it may be cut too.
+        if input.limit() == 0 && !line.ends_with(b"\n") {
+            return Err(too_much());
         }
         if let Some(start) = line
             .windows(HANDSHAKE_PREFIX.len())
@@ -432,6 +439,15 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert_eq!(input.position(), MAX_HANDSHAKE);
         }
+    }
+
+    #[test]
+    fn a_handshake_cut_by_the_budget_is_not_a_version_mismatch() {
+        let mut bytes = vec![b'x'; usize::try_from(MAX_HANDSHAKE).unwrap() - HANDSHAKE.len() + 2];
+        bytes.extend_from_slice(HANDSHAKE);
+        let error = skip_to_handshake(&mut io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("within 1 MiB"), "{error}");
     }
 
     #[test]

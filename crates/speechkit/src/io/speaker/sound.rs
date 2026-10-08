@@ -43,6 +43,14 @@ impl Sound {
             Source::Sink(channel) => channel.rate,
         }
     }
+
+    /// The channel of a sink.
+    pub(super) fn channel(&self) -> Option<Arc<Channel>> {
+        match &self.0 {
+            Source::Sink(channel) => Some(channel.clone()),
+            Source::Tts(_) | Source::Buffer(_) => None,
+        }
+    }
 }
 
 impl Drop for Sound {
@@ -91,9 +99,6 @@ pub(super) struct Channel {
 
 struct ChannelState {
     samples: VecDeque<f32>,
-    /// A one-shot test signal sent under the lock before a full-queue wait.
-    #[cfg(test)]
-    push_waiting: Option<std::sync::mpsc::Sender<()>>,
     /// The sink was closed: the playback ends after what was pushed.
     closed: bool,
     /// The playback ended: pushes fail.
@@ -116,8 +121,6 @@ impl Channel {
                 .max(1),
             state: Mutex::new(ChannelState {
                 samples: VecDeque::new(),
-                #[cfg(test)]
-                push_waiting: None,
                 closed: false,
                 ended: false,
             }),
@@ -174,12 +177,6 @@ impl Sink {
         Self { channel }
     }
 
-    /// Signals the next full-queue wait while holding the channel lock.
-    #[cfg(test)]
-    pub(super) fn notify_on_push_wait(&self, sender: std::sync::mpsc::Sender<()>) {
-        lock(&self.channel.state).push_waiting = Some(sender);
-    }
-
     /// The rate of the samples it takes.
     pub fn sample_rate(&self) -> SampleRate {
         self.channel.rate
@@ -205,13 +202,7 @@ impl Sink {
         while !rest.is_empty() {
             let (mut state, _) =
                 wait_until(&channel.changed, lock(&channel.state), deadline, |state| {
-                    let ready =
-                        state.ended || state.closed || state.samples.len() < channel.capacity;
-                    #[cfg(test)]
-                    if !ready && let Some(sender) = state.push_waiting.take() {
-                        let _ = sender.send(());
-                    }
-                    ready
+                    state.ended || state.closed || state.samples.len() < channel.capacity
                 });
             if state.ended || state.closed {
                 return Err(SpeechError::Closed);

@@ -181,8 +181,12 @@ fn check_models(output: impl Fn(&str, &[&str]) -> Result<String>, now: u64) -> R
     }) {
         Ok(())
     } else {
+        // models.yml runs nightly on master, so a new release commit
+        // needs a run started by hand.
         Err(format!(
-            "no successful models.yml run on {} in the last 24 hours",
+            "no successful models.yml run on {} in the last 24 hours; push it, \
+             start one with `gh workflow run models.yml --ref <branch>`, and \
+             rerun this check when it passes",
             &commit[..commit.len().min(12)]
         ))
     }
@@ -350,27 +354,18 @@ mod tests {
                 false,
             ),
         ] {
-            let output = |program: &str, args: &[&str]| {
-                match program {
-                    "git" => match args {
-                        ["rev-parse", "HEAD"] => Ok("head-commit\n".into()),
-                        ["rev-parse", "HEAD^"] => Ok("parent-commit\n".into()),
-                        _ => panic!("unexpected git command: {args:?}"),
-                    },
-                    "gh" => {
-                        let commit = args.windows(2).find(|pair| pair[0] == "--commit").unwrap()[1];
-                        match commit {
-                            "head-commit" => Ok(head_runs.clone()),
-                            // The parent is always green, but must not make
-                            // an untested or failed HEAD releasable.
-                            "parent-commit" => Ok(format!(
-                                r#"[{{"conclusion":"success","updatedAt":"{at}"}}]"#
-                            )),
-                            _ => panic!("unexpected commit: {commit}"),
-                        }
-                    }
-                    _ => panic!("unexpected command: {program}"),
+            // Only HEAD is known: looking at its parent, which a release
+            // commit's changes are not tested on, panics.
+            let output = |program: &str, args: &[&str]| match (program, args) {
+                ("git", ["rev-parse", "HEAD"]) => Ok("head-commit\n".into()),
+                ("gh", args)
+                    if args
+                        .windows(2)
+                        .any(|pair| pair == ["--commit", "head-commit"]) =>
+                {
+                    Ok(head_runs.clone())
                 }
+                _ => panic!("unexpected command: {program} {args:?}"),
             };
             let result = check_models(output, now + age);
             assert_eq!(

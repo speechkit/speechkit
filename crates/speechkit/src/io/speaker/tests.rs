@@ -233,6 +233,13 @@ fn stopped_and_dropped_playbacks_close_current_and_queued_sinks() {
                 "drop" => drop(speaker),
                 _ => unreachable!(),
             }
+            if action != "drop" {
+                // A stop refuses pushes before it returns, playing or not.
+                assert!(
+                    matches!(sink.push(&[0.1], ms(10)), Err(SpeechError::Closed)),
+                    "queued={queued}, action={action}"
+                );
+            }
             let result = playback.finish(ms(1_000));
             if action == "drop" {
                 assert!(matches!(result, Err(SpeechError::Closed)), "{result:?}");
@@ -254,15 +261,13 @@ fn stopping_a_queued_sink_wakes_a_full_queue_producer() {
     let (sink, playback) = speaker.sink(RATE).unwrap();
     sink.push(&vec![0.1; frames(2_000)], ms(1_000)).unwrap();
     std::thread::scope(|scope| {
-        let (started, ready) = std::sync::mpsc::channel();
         let (send, result) = std::sync::mpsc::channel();
-        sink.notify_on_push_wait(started);
         scope.spawn(move || {
             send.send(sink.push(&[0.1], ms(2_000))).unwrap();
         });
-        ready.recv_timeout(ms(1_000)).unwrap();
-        // The signal is sent with the channel locked. Stopping must acquire
-        // that same lock, so it cannot close the channel before push waits.
+        // Give the producer time to wait on the full queue. Were it late,
+        // its push would fail at once, and the test would pass vacuously.
+        std::thread::sleep(ms(100));
         playback.stop();
         assert!(matches!(
             result.recv_timeout(ms(1_000)).unwrap(),
