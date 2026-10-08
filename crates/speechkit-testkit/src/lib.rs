@@ -6,10 +6,10 @@
 )]
 
 pub mod asr;
-pub mod cer;
 pub mod contract;
 mod gate;
 pub mod gates;
+pub mod metrics;
 pub mod tts;
 pub mod vad;
 pub mod wake;

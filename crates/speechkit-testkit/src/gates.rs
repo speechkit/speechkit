@@ -33,10 +33,22 @@ pub fn large_model_tier() -> bool {
 /// The directory of model `id`, from `SPEECHKIT_MODEL_<ID>` with `-`
 /// read as `_`, or `None` with a note on stderr when it is not set.
 pub fn model_dir(id: &str) -> Option<std::path::PathBuf> {
-    let var = format!("SPEECHKIT_MODEL_{}", id.to_uppercase().replace('-', "_"));
+    gated_dir("SPEECHKIT_MODEL", id, "fetch-fixtures")
+}
+
+/// The directory of eval corpus `id`, from `SPEECHKIT_EVAL_<ID>` with
+/// `-` read as `_`, or `None` with a note on stderr when it is not set.
+pub fn eval_dir(id: &str) -> Option<std::path::PathBuf> {
+    gated_dir("SPEECHKIT_EVAL", id, "fetch-evals")
+}
+
+/// The directory behind `SPEECHKIT_<PREFIX>_<ID>`, or `None` with a
+/// note naming the xtask command that fetches it.
+fn gated_dir(prefix: &str, id: &str, command: &str) -> Option<std::path::PathBuf> {
+    let var = format!("{prefix}_{}", id.to_uppercase().replace('-', "_"));
     let path = std::env::var_os(&var).map(std::path::PathBuf::from);
     if path.is_none() {
-        eprintln!("skipped: {var} is not set; run `cargo xtask fetch-fixtures`");
+        eprintln!("skipped: {var} is not set; run `cargo xtask {command}`");
     }
     path
 }

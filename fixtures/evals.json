@@ -1,0 +1,45 @@
+{
+  "comment": "Evaluation corpora, fetched only by `cargo xtask fetch-evals`, never by the nightly Models workflow. Same shape as fixtures/manifest.json; `include` lists the archive members to unpack (as path prefixes), `nested` unpacks members that are themselves tarballs. AISHELL-1 ships one tar per speaker with the split self-described inside each (test/S07xx/...); only the 20 test speakers are included, so the training data is never written to disk. The full archive is still downloaded, because the sha256 check needs every byte.",
+  "evals": [
+    {
+      "id": "aishell-1",
+      "name": "data_aishell",
+      "kind": "eval",
+      "archive": {
+        "url": "https://www.openslr.org/resources/33/data_aishell.tgz",
+        "sha256": "a4a0313cde0a933e0e01a451f77de0a23d6c942f4694af5bb7f40b9dc38143fe",
+        "size": 15582913665
+      },
+      "include": [
+        "data_aishell/transcript/aishell_transcript_v0.8.txt",
+        "data_aishell/wav/S0764.tar.gz",
+        "data_aishell/wav/S0765.tar.gz",
+        "data_aishell/wav/S0766.tar.gz",
+        "data_aishell/wav/S0767.tar.gz",
+        "data_aishell/wav/S0768.tar.gz",
+        "data_aishell/wav/S0769.tar.gz",
+        "data_aishell/wav/S0770.tar.gz",
+        "data_aishell/wav/S0901.tar.gz",
+        "data_aishell/wav/S0902.tar.gz",
+        "data_aishell/wav/S0903.tar.gz",
+        "data_aishell/wav/S0904.tar.gz",
+        "data_aishell/wav/S0905.tar.gz",
+        "data_aishell/wav/S0906.tar.gz",
+        "data_aishell/wav/S0907.tar.gz",
+        "data_aishell/wav/S0908.tar.gz",
+        "data_aishell/wav/S0912.tar.gz",
+        "data_aishell/wav/S0913.tar.gz",
+        "data_aishell/wav/S0914.tar.gz",
+        "data_aishell/wav/S0915.tar.gz",
+        "data_aishell/wav/S0916.tar.gz"
+      ],
+      "nested": true,
+      "files": [
+        {
+          "path": "transcript/aishell_transcript_v0.8.txt",
+          "sha256": "b5f33b9e0b47548e20a5ea4e504297f80df41d559133924c4e5b7b544c15b5c4"
+        }
+      ]
+    }
+  ]
+}

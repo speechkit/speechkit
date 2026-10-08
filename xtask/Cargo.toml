@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 bzip2 = "0.6"
 clap.workspace = true
+flate2 = "1"
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true

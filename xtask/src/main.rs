@@ -38,6 +38,12 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
     },
+    /// Download and verify the evaluation datasets listed in fixtures/evals.json.
+    FetchEvals {
+        /// Only these eval IDs (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+    },
     /// Generate audio fixtures in many formats with ffmpeg.
     GenAudioFixtures {
         /// Output directory. Default: fixtures/audio.
@@ -52,6 +58,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::FetchFixtures { only } => models::fetch_fixtures(&only),
+        Command::FetchEvals { only } => models::fetch_evals(&only),
         Command::GenAudioFixtures { out } => {
             audio_fixtures::generate(&out.unwrap_or_else(audio_fixtures::default_dir))
         }
