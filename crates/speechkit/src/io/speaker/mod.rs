@@ -11,7 +11,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering, fence},
     },
     thread::JoinHandle,
@@ -31,7 +31,7 @@ use crate::{
         convert::{OutputSample, fill_interleaved},
         list, open,
     },
-    speech::{deadline::wait_until, opening::Opening, resample::Resampler},
+    speech::{deadline::wait_until, opening::Opening, resample::Resampler, sync::lock},
     tts::{PushedText, TtsEngine, TtsOptions, TtsSession, TtsUpdate},
 };
 
@@ -64,10 +64,6 @@ fn device_error(error: impl std::fmt::Display) -> SpeechError {
 
 fn lost_error() -> SpeechError {
     device_error("the output device stopped")
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `N` values one thread writes and others read consistently, without

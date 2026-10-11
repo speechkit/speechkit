@@ -79,5 +79,5 @@ pub(crate) fn stream(
             "the queue was full {retries} times; chunks were retried"
         );
     }
-    output::print(&transcript, args.format, stdout).map_err(|e| CliError::input(e.to_string()))
+    Ok(output::print(&transcript, args.format, stdout)?)
 }

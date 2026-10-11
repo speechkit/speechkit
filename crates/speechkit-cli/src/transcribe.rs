@@ -98,5 +98,5 @@ pub(crate) fn transcribe(
             Ok(())
         },
     )?;
-    output::print(&transcript, args.format, stdout).map_err(|e| CliError::input(e.to_string()))
+    Ok(output::print(&transcript, args.format, stdout)?)
 }

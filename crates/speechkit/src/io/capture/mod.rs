@@ -3,7 +3,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
@@ -23,6 +23,7 @@ use crate::{
         convert::{DeviceSample, mixdown},
         list, open,
     },
+    speech::sync::lock,
     wake::WakeWordModel,
 };
 
@@ -44,21 +45,16 @@ const BUFFER: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(20);
 /// A reservation holds the audio after a wake word for this long (D-03).
 const RESERVATION: Duration = Duration::from_secs(30);
+/// The longest chunk a listening or a watching is fed at once.
+const FEED: Duration = Duration::from_millis(100);
+/// The smallest `max_backlog` of a listening or a watching.
+const MIN_BACKLOG: Duration = Duration::from_millis(100);
 /// [`Device::lost_at`] when no samples were lost since the capture thread
 /// last looked.
 const NOTHING_LOST: u64 = u64::MAX;
 
 fn device_error(error: impl std::fmt::Display) -> SpeechError {
     SpeechError::backend("microphone", true, error.to_string())
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Frames in `duration` at `rate`, saturating.
-fn frames(rate: SampleRate, duration: Duration) -> u64 {
-    rate.frames_in(duration)
 }
 
 /// Where a microphone's audio comes from.
@@ -162,7 +158,7 @@ impl Microphone {
     pub fn capture(&self, options: CaptureOptions) -> Result<Capture, SpeechError> {
         let rate = self.sample_rate;
         let device = Arc::new(Device::new(rate, &options));
-        let capacity = usize::try_from(frames(rate, BUFFER)).unwrap_or(96_000);
+        let capacity = usize::try_from(rate.frames_in(BUFFER)).unwrap_or(96_000);
         let (producer, consumer) = HeapRb::<f32>::new(capacity).split();
         match &self.source {
             Source::Device {
@@ -276,7 +272,7 @@ impl Device {
     fn new(rate: SampleRate, options: &CaptureOptions) -> Self {
         Self {
             rate,
-            timeline: Timeline::new(frames(rate, options.history), frames(rate, RESERVATION)),
+            timeline: Timeline::new(rate.frames_in(options.history), rate.frames_in(RESERVATION)),
             level: AtomicU32::new(0),
             lost: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -512,8 +508,8 @@ impl Capture {
     ) -> Result<Listening, SpeechError> {
         listen.validate()?;
         let rate = self.device.rate;
-        let start = listen.start.map(|start| frames(rate, start));
-        let limit = frames(rate, listen.max_backlog);
+        let start = listen.start.map(|start| rate.frames_in(start));
+        let limit = rate.frames_in(listen.max_backlog);
         let (reader, start) = self.device.timeline.add_reader(start, 0, limit)?;
         Listening::start(
             &self.device,

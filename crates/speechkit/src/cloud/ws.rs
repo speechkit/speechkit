@@ -134,6 +134,53 @@ pub(crate) enum Incoming {
     ),
 }
 
+/// Decodes what the socket yielded: `Ok(None)` for a control frame, which
+/// tungstenite answers itself, and an error once the connection ends.
+fn decode(
+    backend: &'static str,
+    message: Option<Result<Message, WsError>>,
+) -> Result<Option<Incoming>, SpeechError> {
+    match message {
+        None => Err(SpeechError::backend(backend, true, "the connection closed")),
+        Some(Err(error)) => Err(failure(backend, &error)),
+        Some(Ok(Message::Text(text))) => serde_json::from_str(&text)
+            .map(|value| Some(Incoming::Json(value)))
+            .map_err(|_| SpeechError::backend(backend, false, "a message is not valid JSON")),
+        Some(Ok(Message::Binary(bytes))) => Ok(Some(Incoming::Binary(bytes.to_vec()))),
+        Some(Ok(Message::Close(_))) => Err(SpeechError::backend(
+            backend,
+            true,
+            "the server closed the connection",
+        )),
+        Some(Ok(_)) => Ok(None),
+    }
+}
+
+/// Sends `message` on `sink`, giving up after `timeout`.
+async fn send_within<S>(
+    backend: &'static str,
+    sink: &mut S,
+    message: Message,
+    timeout: Duration,
+) -> Result<(), SpeechError>
+where
+    S: futures::Sink<Message, Error = WsError> + Unpin,
+{
+    match tokio::time::timeout(timeout, sink.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(failure(backend, &error)),
+        Err(_) => Err(SpeechError::backend(backend, true, "sending timed out")),
+    }
+}
+
+/// The close frame sent when a connection ends normally.
+fn close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "finished".into(),
+    }))
+}
+
 /// A connected WebSocket used from a blocking thread. Dropping it without
 /// [`close`](Self::close) ends the TCP connection without a close handshake.
 pub(crate) struct Ws {
@@ -212,13 +259,7 @@ impl Ws {
         let backend = self.backend;
         let runtime = self.runtime.clone();
         let socket = self.socket()?;
-        runtime.block_on(async {
-            match tokio::time::timeout(timeout, socket.send(message)).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(failure(backend, &error)),
-                Err(_) => Err(SpeechError::backend(backend, true, "sending timed out")),
-            }
-        })
+        runtime.block_on(send_within(backend, socket, message, timeout))
     }
 
     /// Sends a JSON text message.
@@ -254,24 +295,10 @@ impl Ws {
             // Nothing arrived in time.
             return Ok(None);
         };
-        match message {
-            None => Err(SpeechError::backend(backend, true, "the connection closed")),
-            Some(Err(error)) => Err(failure(backend, &error)),
-            Some(Ok(Message::Text(text))) => serde_json::from_str(&text)
-                .map(|value| Some(Incoming::Json(value)))
-                .map_err(|_| SpeechError::backend(backend, false, "a message is not valid JSON")),
-            Some(Ok(Message::Binary(bytes))) => Ok(Some(Incoming::Binary(bytes.to_vec()))),
-            Some(Ok(Message::Close(_))) => {
-                self.socket = None;
-                Err(SpeechError::backend(
-                    backend,
-                    true,
-                    "the server closed the connection",
-                ))
-            }
-            // Control frames; tungstenite answers pings itself.
-            Some(Ok(_)) => Ok(None),
+        if matches!(message, Some(Ok(Message::Close(_)))) {
+            self.socket = None;
         }
+        decode(backend, message)
     }
 
     /// Closes the connection politely, ignoring failures.
@@ -279,13 +306,9 @@ impl Ws {
         let Some(mut socket) = self.socket.take() else {
             return;
         };
-        let _ = self.runtime.block_on(async {
-            let frame = CloseFrame {
-                code: CloseCode::Normal,
-                reason: "finished".into(),
-            };
-            tokio::time::timeout(timeout, socket.send(Message::Close(Some(frame)))).await
-        });
+        let _ = self
+            .runtime
+            .block_on(async { tokio::time::timeout(timeout, socket.send(close_frame())).await });
     }
 }
 
@@ -359,22 +382,10 @@ impl Ws {
             let reader = reader.clone();
             async move {
                 loop {
-                    let message = match incoming.next().await {
-                        None => Err(SpeechError::backend(backend, true, "the connection closed")),
-                        Some(Err(error)) => Err(failure(backend, &error)),
-                        Some(Ok(Message::Text(text))) => serde_json::from_str(&text)
-                            .map(Incoming::Json)
-                            .map_err(|_| {
-                                SpeechError::backend(backend, false, "a message is not valid JSON")
-                            }),
-                        Some(Ok(Message::Binary(bytes))) => Ok(Incoming::Binary(bytes.to_vec())),
-                        Some(Ok(Message::Close(_))) => Err(SpeechError::backend(
-                            backend,
-                            true,
-                            "the server closed the connection",
-                        )),
-                        // Control frames; tungstenite answers pings itself.
-                        Some(Ok(_)) => continue,
+                    let message = match decode(backend, incoming.next().await) {
+                        Ok(Some(message)) => Ok(message),
+                        Ok(None) => continue,
+                        Err(error) => Err(error),
                     };
                     let mut state = reader.lock();
                     // The connection is gone after an error from it.
@@ -419,13 +430,8 @@ impl<H: Handler> Pushed<H> {
                 "the connection is closed",
             ));
         };
-        self.runtime.block_on(async {
-            match tokio::time::timeout(timeout, sink.send(message)).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(failure(backend, &error)),
-                Err(_) => Err(SpeechError::backend(backend, true, "sending timed out")),
-            }
-        })
+        self.runtime
+            .block_on(send_within(backend, sink, message, timeout))
     }
 
     /// Sends a JSON text message.
@@ -493,13 +499,9 @@ impl<H: Handler> Pushed<H> {
         let Some(mut sink) = self.sink.take() else {
             return;
         };
-        let _ = self.runtime.block_on(async {
-            let frame = CloseFrame {
-                code: CloseCode::Normal,
-                reason: "finished".into(),
-            };
-            tokio::time::timeout(timeout, sink.send(Message::Close(Some(frame)))).await
-        });
+        let _ = self
+            .runtime
+            .block_on(async { tokio::time::timeout(timeout, sink.send(close_frame())).await });
     }
 }
 
@@ -511,12 +513,7 @@ impl<H> Drop for Pushed<H> {
         }
         if let Some(mut sink) = self.sink.take() {
             let _ = self.runtime.block_on(async {
-                let frame = CloseFrame {
-                    code: CloseCode::Normal,
-                    reason: "finished".into(),
-                };
-                let _ =
-                    tokio::time::timeout(CLOSE_WAIT, sink.send(Message::Close(Some(frame)))).await;
+                let _ = tokio::time::timeout(CLOSE_WAIT, sink.send(close_frame())).await;
                 sink.close().await
             });
         }

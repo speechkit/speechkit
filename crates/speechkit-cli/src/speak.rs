@@ -60,9 +60,8 @@ pub(crate) fn voices(
     stdout: &mut dyn Write,
 ) -> Result<(), CliError> {
     let engine = backends.tts(&args.backend)?;
-    let write = |stdout: &mut dyn Write, line: String| {
-        writeln!(stdout, "{line}").map_err(|e| CliError::input(e.to_string()))
-    };
+    let write =
+        |stdout: &mut dyn Write, line: String| writeln!(stdout, "{line}").map_err(CliError::from);
     for voice in engine.voices() {
         let languages = if voice.languages.is_empty() {
             "any".to_owned()

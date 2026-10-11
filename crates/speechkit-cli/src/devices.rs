@@ -14,11 +14,11 @@ pub(crate) fn devices(stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<
     let mut failure: Option<CliError> = None;
     for (index, (kind, devices)) in lists.into_iter().enumerate() {
         if index > 0 {
-            writeln!(stdout).map_err(|e| CliError::input(e.to_string()))?;
+            writeln!(stdout)?;
         }
         match devices {
             Ok(devices) => {
-                print(stdout, kind, &devices).map_err(|e| CliError::input(e.to_string()))?;
+                print(stdout, kind, &devices)?;
             }
             Err(error) => {
                 let mut error = CliError::from(error);

@@ -80,10 +80,6 @@ fn dashscope(backends: &Backends, args: &TtsBackendArgs) -> Result<DashScopeTts,
     DashScopeTts::new(config, backends.cloud()?)
 }
 
-fn engine(backend: impl speechkit::tts::TtsBackend) -> TtsEngine {
-    TtsEngine::new(backend)
-}
-
 /// Builds the synthesis engine `args` describe.
 pub(crate) fn build(backends: &Backends, args: &TtsBackendArgs) -> Result<TtsEngine, SpeechError> {
     Ok(match args.backend {
@@ -92,9 +88,9 @@ pub(crate) fn build(backends: &Backends, args: &TtsBackendArgs) -> Result<TtsEng
             let inference = Inference::default()
                 .with_provider(args.provider.parse()?)
                 .with_threads(args.threads);
-            engine(TtsConfig::new(dir).with_inference(inference).load()?)
+            TtsEngine::new(TtsConfig::new(dir).with_inference(inference).load()?)
         }
-        TtsBackendKind::Openai => engine(openai(backends, args)?),
-        TtsBackendKind::Dashscope => engine(dashscope(backends, args)?),
+        TtsBackendKind::Openai => TtsEngine::new(openai(backends, args)?),
+        TtsBackendKind::Dashscope => TtsEngine::new(dashscope(backends, args)?),
     })
 }

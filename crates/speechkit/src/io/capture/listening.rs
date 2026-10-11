@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{
-    Device, Hold, TICK, frames, lock,
+    Device, FEED, Hold, MIN_BACKLOG, TICK, lock,
     timeline::{Read, Timeline},
 };
 use crate::{
@@ -15,11 +15,6 @@ use crate::{
     asr::{AsrEngine, AsrOptions, AsrResult, AsrSession, AsrUpdates, PushError, PushErrorKind},
     speech::{deadline::wait_until, opening::Opening},
 };
-
-/// The longest chunk the feeder pushes at once.
-const FEED: Duration = Duration::from_millis(100);
-/// The smallest `max_backlog`.
-const MIN_BACKLOG: Duration = Duration::from_millis(100);
 
 /// Where a [`Listening`] starts, and what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +234,7 @@ impl Listening {
         };
         let recording = (!listen.recording.is_zero()).then(|| Recorder {
             samples: Vec::new(),
-            limit: usize::try_from(frames(rate, listen.recording)).unwrap_or(usize::MAX),
+            limit: usize::try_from(rate.frames_in(listen.recording)).unwrap_or(usize::MAX),
             truncated: false,
         });
         let state = Arc::new(State {
@@ -421,7 +416,7 @@ impl Feeder {
         let reader = state.reader;
         let max = session
             .max_chunk_frames()
-            .min(usize::try_from(frames(rate, FEED)).unwrap_or(usize::MAX))
+            .min(usize::try_from(rate.frames_in(FEED)).unwrap_or(usize::MAX))
             .max(1);
         let mut pending: Option<Vec<f32>> = None;
         // False once the session has failed: the listening then only

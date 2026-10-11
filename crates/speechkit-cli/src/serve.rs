@@ -1,6 +1,6 @@
 //! `speechkit serve`.
 
-use std::{io::Write, net::SocketAddr, time::Duration};
+use std::{io::Write, net::SocketAddr, path::Path, time::Duration};
 
 use speechkit::Secret;
 use speechkit::server::{RunningServer, Server};
@@ -39,6 +39,17 @@ impl ServeHandle {
     }
 }
 
+/// The model id the server reports: `explicit`, else the model directory's
+/// name, else the backend's name.
+fn model_name(explicit: Option<&String>, model: Option<&Path>, backend: &str) -> String {
+    explicit.cloned().unwrap_or_else(|| {
+        model.and_then(Path::file_name).map_or_else(
+            || backend.to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    })
+}
+
 fn is_loopback(bind: &str) -> bool {
     bind.parse::<SocketAddr>()
         .is_ok_and(|address| address.ip().is_loopback())
@@ -68,32 +79,22 @@ pub fn serve(
         );
     }
     let engine = backends.asr(&args.backend)?;
-    let model_id = args.model_id.clone().unwrap_or_else(|| {
-        args.backend
-            .model
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map_or_else(
-                || engine.name().to_owned(),
-                |name| name.to_string_lossy().into_owned(),
-            )
-    });
+    let model_id = model_name(
+        args.model_id.as_ref(),
+        args.backend.model.as_deref(),
+        engine.name(),
+    );
     let mut server = Server::new()
         .with_asr(engine, model_id)
         .with_bind(args.bind.clone())
         .with_max_body_bytes(args.max_body_mib.saturating_mul(1024 * 1024));
     if let Some(tts_args) = args.tts() {
         let tts = backends.tts(&tts_args)?;
-        let tts_id = args.tts_model_id.clone().unwrap_or_else(|| {
-            tts_args
-                .model
-                .as_ref()
-                .and_then(|path| path.file_name())
-                .map_or_else(
-                    || tts.name().to_owned(),
-                    |name| name.to_string_lossy().into_owned(),
-                )
-        });
+        let tts_id = model_name(
+            args.tts_model_id.as_ref(),
+            tts_args.model.as_deref(),
+            tts.name(),
+        );
         server = server.with_tts(tts, tts_id);
     }
     if let Some(seconds) = args.timeout {
@@ -108,8 +109,7 @@ pub fn serve(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("speechkit-serve")
-        .build()
-        .map_err(|e| CliError::input(e.to_string()))?;
+        .build()?;
     let server = runtime.block_on(server.start(std::future::pending()))?;
     let _ = writeln!(stderr, "listening on http://{}", server.local_addr());
     Ok(ServeHandle { runtime, server })

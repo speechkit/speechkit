@@ -5,7 +5,7 @@ use std::{
     io::{BufReader, BufWriter},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
+    sync::{Arc, Mutex, mpsc},
     thread::JoinHandle,
 };
 
@@ -14,16 +14,15 @@ use crate::{
     asr::{AsrBackend, AsrCapabilities, AsrEvents, AsrOptions, AsrStream},
 };
 
-use super::protocol::{Request, Response, WireError, read_frame, skip_to_handshake, write_frame};
+use super::{
+    lock,
+    protocol::{Request, Response, WireError, read_frame, skip_to_handshake, write_frame},
+};
 
 const NAME: &str = "speechkit-worker";
 
 fn crashed(detail: impl std::fmt::Display) -> SpeechError {
     SpeechError::backend(NAME, true, format!("the worker process failed: {detail}"))
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// How to start a worker process.

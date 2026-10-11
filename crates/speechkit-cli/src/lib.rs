@@ -82,6 +82,14 @@ impl From<SpeechError> for CliError {
     }
 }
 
+/// An I/O failure, such as writing the output or starting the server's
+/// runtime, exits as invalid input.
+impl From<std::io::Error> for CliError {
+    fn from(error: std::io::Error) -> Self {
+        Self::input(error.to_string())
+    }
+}
+
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)

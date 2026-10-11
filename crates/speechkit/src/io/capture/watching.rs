@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::{
-    Device, Hold, Listening, TICK, WeakHold, frames,
+    Device, FEED, Hold, Listening, MIN_BACKLOG, TICK, WeakHold,
     listening::ListenOptions,
     lock,
     timeline::{Read, Timeline},
@@ -24,13 +24,9 @@ use crate::{
     wake::{WakeEvent, WakeWordDetector, WakeWordModel},
 };
 
-/// The longest chunk the detector is fed at once.
-const FEED: Duration = Duration::from_millis(100);
 /// Audio before a watching's cursor that stays held, so a keyword the
 /// detector reports late can still be reserved from its end.
 const LOOKBACK: Duration = Duration::from_secs(2);
-/// The smallest `max_backlog`.
-const MIN_BACKLOG: Duration = Duration::from_millis(100);
 
 /// How a [`Watching`] may fall behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +107,7 @@ impl Wake {
             timeline.release(reservation);
             return Err(SpeechError::Closed);
         };
-        let limit = frames(self.device.rate, listen.max_backlog);
+        let limit = self.device.rate.frames_in(listen.max_backlog);
         let (reader, start) = timeline.claim(reservation, limit)?;
         Listening::start(&self.device, hold, reader, start, engine, options, &listen)
     }
@@ -178,8 +174,8 @@ impl Watching {
         let rate = device.rate;
         let (reader, start) = device.timeline.add_reader(
             None,
-            frames(rate, LOOKBACK),
-            frames(rate, options.max_backlog),
+            rate.frames_in(LOOKBACK),
+            rate.frames_in(options.max_backlog),
         )?;
         let state = Arc::new(State {
             stop: AtomicBool::new(false),
@@ -324,7 +320,7 @@ impl Detecting {
     }
 
     fn detect(&mut self) -> Result<(), SpeechError> {
-        let max = usize::try_from(frames(self.device.rate, FEED)).unwrap_or(usize::MAX);
+        let max = usize::try_from(self.device.rate.frames_in(FEED)).unwrap_or(usize::MAX);
         let mut resampled = Vec::new();
         loop {
             if self.state.stop.load(Ordering::Acquire) {
@@ -376,7 +372,7 @@ impl Detecting {
                 end: self.origin + event.end,
                 keyword: event.keyword,
             };
-            let reservation = self.timeline().reserve(frames(rate, event.end));
+            let reservation = self.timeline().reserve(rate.frames_in(event.end));
             tracing::debug!(reserved = reservation.is_some(), "wake word heard");
             let wake = Wake {
                 event,

@@ -17,6 +17,7 @@ use crate::{
 
 use super::{
     config::WireConfig,
+    lock,
     protocol::{
         HANDSHAKE, Request, Response, WireCaps, WireError, options, read_frame, write_frame,
     },
@@ -175,12 +176,6 @@ impl Served {
         drop(stream);
         closed.store(true, Ordering::SeqCst);
     }
-}
-
-fn lock<T: ?Sized>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn not_open() -> SpeechError {

@@ -2,10 +2,9 @@
 
 use std::{io::Write, time::Duration};
 
-use speechkit::asr::AsrOptions;
 use speechkit::io::Microphone;
 
-use crate::{BackendFactory, CliError, MicArgs, output, progress};
+use crate::{BackendFactory, CliError, MicArgs, output, progress, transcribe};
 
 /// How long finishing the session after Enter may take.
 const WAIT: Duration = Duration::from_secs(60);
@@ -22,9 +21,7 @@ pub(crate) fn mic(
         None => Microphone::open_default()?,
     };
     let engine = backends.asr(&args.backend)?;
-    let mut options = AsrOptions::default();
-    options.language.clone_from(&args.backend.language);
-    let listening = microphone.listen(&engine, options)?;
+    let listening = microphone.listen(&engine, transcribe::options(&args.backend))?;
     let updates = listening.updates();
     let _ = writeln!(stderr, "listening; press Enter to stop");
     std::thread::scope(|scope| {
@@ -38,5 +35,5 @@ pub(crate) fn mic(
     let transcript = listening
         .finish(WAIT)
         .map_err(speechkit::SpeechError::from)?;
-    output::print(&transcript, args.format, stdout).map_err(|e| CliError::input(e.to_string()))
+    Ok(output::print(&transcript, args.format, stdout)?)
 }

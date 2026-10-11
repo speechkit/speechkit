@@ -60,10 +60,6 @@ impl Backends {
     }
 }
 
-fn engine(backend: impl speechkit::asr::AsrBackend) -> AsrEngine {
-    AsrEngine::new(backend)
-}
-
 pub(crate) fn required<'a>(
     value: Option<&'a Path>,
     flag: &str,
@@ -205,7 +201,7 @@ impl BackendFactory for Backends {
         let built = match args.backend {
             BackendKind::SherpaStreaming => {
                 let dir = required(args.model.as_deref(), "--model DIR", "sherpa-streaming")?;
-                engine(sherpa(AsrConfig::streaming(dir), args)?)
+                AsrEngine::new(sherpa(AsrConfig::streaming(dir), args)?)
             }
             BackendKind::SherpaOffline => {
                 let dir = required(args.model.as_deref(), "--model DIR", "sherpa-offline")?;
@@ -214,13 +210,13 @@ impl BackendFactory for Backends {
                 if let Some(family) = &args.family {
                     config = config.with_family(family.parse()?);
                 }
-                engine(sherpa(config, args)?)
+                AsrEngine::new(sherpa(config, args)?)
             }
-            BackendKind::OpenaiRealtime => engine(realtime(self, args)?),
-            BackendKind::Dashscope => engine(dashscope(self, args)?),
+            BackendKind::OpenaiRealtime => AsrEngine::new(realtime(self, args)?),
+            BackendKind::Dashscope => AsrEngine::new(dashscope(self, args)?),
             BackendKind::OpenaiHttp => match &args.vad {
-                Some(file) => engine(VadBackend::new(openai(self, args)?, vad(file)?)?),
-                None => engine(openai(self, args)?),
+                Some(file) => AsrEngine::new(VadBackend::new(openai(self, args)?, vad(file)?)?),
+                None => AsrEngine::new(openai(self, args)?),
             },
         };
         match &args.punct {

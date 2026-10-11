@@ -18,3 +18,12 @@ mod serve;
 
 pub use client::{IsolatedAsr, WorkerCommand};
 pub use serve::{serve, worker_main};
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Locks `mutex`, recovering the guard if a thread panicked while holding
+/// it. These are std locks even in loom builds, since no loom model runs
+/// a worker.
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
