@@ -17,13 +17,14 @@ use super::{
 use crate::{
     AudioBuffer, Deadline, RecvError, SpeechError,
     speech::{
-        opening::{Opening, wait_open},
+        opening::{Opening, spawn, wait_open},
         slots::{DEFAULT_MAX_SESSIONS, SlotLimiter},
     },
 };
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone)]
 struct Inner {
     backend: Arc<dyn TtsBackend>,
     slots: SlotLimiter,
@@ -43,27 +44,22 @@ impl TtsEngine {
     /// the default [`TtsLimits`]. `backend` may also be shared or
     /// boxed, such as an `Arc<dyn TtsBackend>`.
     pub fn new(backend: impl TtsBackend) -> Self {
-        Self::build(
-            Arc::new(backend),
-            SlotLimiter::new(DEFAULT_MAX_SESSIONS),
-            DEFAULT_MAX_SESSIONS,
-            TtsLimits::default(),
-        )
-    }
-
-    fn build(
-        backend: Arc<dyn TtsBackend>,
-        slots: SlotLimiter,
-        max_sessions: NonZeroUsize,
-        limits: TtsLimits,
-    ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                backend,
-                slots,
-                max_sessions,
-                limits,
+                backend: Arc::new(backend),
+                slots: SlotLimiter::new(DEFAULT_MAX_SESSIONS),
+                max_sessions: DEFAULT_MAX_SESSIONS,
+                limits: TtsLimits::default(),
             }),
+        }
+    }
+
+    /// This engine with one setting changed.
+    fn with(self, change: impl FnOnce(&mut Inner)) -> Self {
+        let mut inner = Arc::unwrap_or_clone(self.inner);
+        change(&mut inner);
+        Self {
+            inner: Arc::new(inner),
         }
     }
 
@@ -76,25 +72,16 @@ impl TtsEngine {
     #[must_use]
     pub fn with_max_sessions(self, max: usize) -> Self {
         let max = NonZeroUsize::new(max).unwrap_or(NonZeroUsize::MIN);
-        let inner = &self.inner;
-        Self::build(
-            inner.backend.clone(),
-            SlotLimiter::new(max),
-            max,
-            inner.limits,
-        )
+        self.with(|inner| {
+            inner.slots = SlotLimiter::new(max);
+            inner.max_sessions = max;
+        })
     }
 
     /// Sets the limits of each session.
     #[must_use]
     pub fn with_limits(self, limits: TtsLimits) -> Self {
-        let inner = &self.inner;
-        Self::build(
-            inner.backend.clone(),
-            inner.slots.clone(),
-            inner.max_sessions,
-            limits,
-        )
+        self.with(|inner| inner.limits = limits)
     }
 
     /// The backend's name.
@@ -185,27 +172,11 @@ impl TtsEngine {
             chunker: Chunker::new(chunk_chars),
             slot,
         };
-        std::thread::Builder::new()
-            .name(format!("speechkit-tts-{id}"))
-            .spawn(move || worker.run())
-            .map_err(|e| SpeechError::backend("speechkit", true, e))?;
+        spawn(format!("speechkit-tts-{id}"), move || worker.run())?;
         let (session, output) = halves(&shared);
-        if opening == Opening::Background {
-            return Ok((session, output));
+        if opening != Opening::Background {
+            wait_open(&*shared, deadline)?;
         }
-        wait_open(
-            &shared.changed,
-            shared.lock(),
-            deadline,
-            |core| core.stage,
-            || {
-                shared.terminal.get().map(|result| match result.as_ref() {
-                    Err(failure) => failure.error.clone(),
-                    Ok(_) => SpeechError::Closed,
-                })
-            },
-            |core, error| shared.fail(&core, error),
-        )?;
         Ok((session, output))
     }
 

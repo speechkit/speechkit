@@ -12,7 +12,10 @@ impl KnownActivity {
     /// The last point sent.
     #[cfg_attr(
         not(feature = "dashscope"),
-        expect(dead_code, reason = "only DashScope starts speech where activity is known")
+        expect(
+            dead_code,
+            reason = "only DashScope starts speech where activity is known"
+        )
     )]
     pub(crate) fn get(self) -> Duration {
         self.0

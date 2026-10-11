@@ -19,7 +19,7 @@ use crate::{
     AudioBuffer, Deadline, SampleRate, SpeechError,
     speech::{
         audio::find_invalid,
-        opening::{Opening, wait_open},
+        opening::{Opening, spawn, wait_open},
         slots::{DEFAULT_MAX_SESSIONS, SlotLimiter},
     },
 };
@@ -27,6 +27,7 @@ use crate::{
 /// Process-wide session counter, for session IDs and thread names.
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone)]
 struct Inner {
     backend: Arc<dyn AsrBackend>,
     slots: SlotLimiter,
@@ -51,30 +52,23 @@ impl AsrEngine {
     /// the default [`AsrLimits`]. `backend` may also be shared or
     /// boxed, such as an `Arc<dyn AsrBackend>`.
     pub fn new(backend: impl AsrBackend) -> Self {
-        Self::build(
-            Arc::new(backend),
-            SlotLimiter::new(DEFAULT_MAX_SESSIONS),
-            DEFAULT_MAX_SESSIONS,
-            AsrLimits::default(),
-            None,
-        )
-    }
-
-    fn build(
-        backend: Arc<dyn AsrBackend>,
-        slots: SlotLimiter,
-        max_sessions: NonZeroUsize,
-        limits: AsrLimits,
-        post: Option<Arc<dyn PostProcessor>>,
-    ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                backend,
-                slots,
-                max_sessions,
-                limits,
-                post,
+                backend: Arc::new(backend),
+                slots: SlotLimiter::new(DEFAULT_MAX_SESSIONS),
+                max_sessions: DEFAULT_MAX_SESSIONS,
+                limits: AsrLimits::default(),
+                post: None,
             }),
+        }
+    }
+
+    /// This engine with one setting changed.
+    fn with(self, change: impl FnOnce(&mut Inner)) -> Self {
+        let mut inner = Arc::unwrap_or_clone(self.inner);
+        change(&mut inner);
+        Self {
+            inner: Arc::new(inner),
         }
     }
 
@@ -87,41 +81,23 @@ impl AsrEngine {
     #[must_use]
     pub fn with_max_sessions(self, max: usize) -> Self {
         let max = NonZeroUsize::new(max).unwrap_or(NonZeroUsize::MIN);
-        let inner = &self.inner;
-        Self::build(
-            inner.backend.clone(),
-            SlotLimiter::new(max),
-            max,
-            inner.limits,
-            inner.post.clone(),
-        )
+        self.with(|inner| {
+            inner.slots = SlotLimiter::new(max);
+            inner.max_sessions = max;
+        })
     }
 
     /// Sets the limits of each session.
     #[must_use]
     pub fn with_limits(self, limits: AsrLimits) -> Self {
-        let inner = &self.inner;
-        Self::build(
-            inner.backend.clone(),
-            inner.slots.clone(),
-            inner.max_sessions,
-            limits,
-            inner.post.clone(),
-        )
+        self.with(|inner| inner.limits = limits)
     }
 
     /// Applies `processor` to every committed segment, for example to add
     /// punctuation.
     #[must_use]
     pub fn with_post_processor(self, processor: impl PostProcessor) -> Self {
-        let inner = &self.inner;
-        Self::build(
-            inner.backend.clone(),
-            inner.slots.clone(),
-            inner.max_sessions,
-            inner.limits,
-            Some(Arc::new(processor)),
-        )
+        self.with(|inner| inner.post = Some(Arc::new(processor)))
     }
 
     /// The backend's name.
@@ -223,29 +199,13 @@ impl AsrEngine {
             block: geometry.block,
             slot,
         };
-        std::thread::Builder::new()
-            .name(format!("speechkit-asr-{id}"))
-            .spawn(move || worker.run())
-            .map_err(|error| SpeechError::backend("speechkit", true, error))?;
+        spawn(format!("speechkit-asr-{id}"), move || worker.run())?;
         let session = AsrSession {
             shared: shared.clone(),
         };
-        if opening == Opening::Background {
-            return Ok(session);
+        if opening != Opening::Background {
+            wait_open(&*shared, deadline)?;
         }
-        wait_open(
-            &shared.changed,
-            shared.lock(),
-            deadline,
-            |core| core.stage,
-            || {
-                shared.terminal.get().map(|result| match result.as_ref() {
-                    Err(failure) => failure.error.clone(),
-                    Ok(_) => SpeechError::Closed,
-                })
-            },
-            |mut core, error| shared.settle_failure(&mut core, error),
-        )?;
         Ok(session)
     }
 

@@ -6,12 +6,117 @@
 //! `Capacity` promptly (A-14). What is costly, such as building a
 //! resampler, happens on the session's thread once the slot is held.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use super::{
+    audio::SampleRate,
     deadline::{self, Deadline},
     error::SpeechError,
+    resample::Resampler,
     slots::{SlotGuard, SlotLimiter},
     sync::{Condvar, MutexGuard},
 };
+
+/// A session's shared state, as opening it sees it.
+pub(crate) trait Opens {
+    /// The state behind the session's lock.
+    type Core;
+
+    /// Locks the session's state.
+    fn lock(&self) -> MutexGuard<'_, Self::Core>;
+
+    /// Signalled on every change to the state.
+    fn changed(&self) -> &Condvar;
+
+    /// The engine's session slots.
+    fn slots(&self) -> &SlotLimiter;
+
+    /// How far the session has got in opening.
+    fn stage(core: &mut Self::Core) -> &mut Stage;
+
+    /// Whether the session has a result.
+    fn ended(&self) -> bool;
+
+    /// The error a caller waiting for the open gets once the session has a
+    /// result: its error, or `Closed` for a success.
+    fn ended_error(&self) -> Option<SpeechError>;
+
+    /// Ends the session with `error`, keeping what it made.
+    fn fail(&self, core: &mut Self::Core, error: SpeechError);
+}
+
+/// Runs `run` on a new thread named `name`.
+///
+/// # Errors
+///
+/// A retryable [`SpeechError::Backend`] if the thread cannot be started.
+pub(crate) fn spawn(name: String, run: impl FnOnce() + Send + 'static) -> Result<(), SpeechError> {
+    std::thread::Builder::new()
+        .name(name)
+        .spawn(run)
+        .map(drop)
+        .map_err(|error| SpeechError::backend("speechkit", true, error))
+}
+
+/// Opens a session on its own thread. It waits for a slot unless `slot`
+/// already is one, then builds the resampler from `from` to `to` and calls
+/// `open`, catching a panic as a failure of `backend`.
+///
+/// Returns the slot, the resampler, and the stream once the session is
+/// open. Returns `None` if the session ended first or failed to open; a
+/// failure is published only after the slot is released (A-09, T-11).
+pub(crate) fn open_stream<S: Opens, T>(
+    shared: &S,
+    slot: Option<SlotGuard>,
+    (from, to): (SampleRate, SampleRate),
+    backend: &str,
+    open: impl FnOnce() -> Result<T, SpeechError>,
+) -> Option<(SlotGuard, Resampler, T)> {
+    let slot = match slot {
+        Some(slot) => slot,
+        None => shared.slots().acquire(|| shared.ended())?,
+    };
+    {
+        let mut core = shared.lock();
+        if shared.ended() {
+            return None;
+        }
+        *S::stage(&mut core) = Stage::Backend;
+    }
+    // A failure to build the resampler ends the session like a failure to
+    // open the stream.
+    let opened = Resampler::new(from, to).and_then(|resampler| {
+        if shared.ended() {
+            return Err(SpeechError::Closed);
+        }
+        let stream = catch_unwind(AssertUnwindSafe(open)).unwrap_or_else(|_| {
+            Err(SpeechError::backend(
+                backend.to_owned(),
+                false,
+                "the backend panicked while opening",
+            ))
+        })?;
+        Ok((resampler, stream))
+    });
+    match opened {
+        Ok((resampler, stream)) => {
+            {
+                let mut core = shared.lock();
+                if !shared.ended() {
+                    *S::stage(&mut core) = Stage::Open;
+                }
+            }
+            shared.changed().notify_all();
+            Some((slot, resampler, stream))
+        }
+        Err(error) => {
+            drop(slot);
+            let mut core = shared.lock();
+            shared.fail(&mut core, error);
+            None
+        }
+    }
+}
 
 /// How a new session gets its slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,37 +176,29 @@ impl Opening {
 
 /// Waits until a session is open, or `deadline` passes.
 ///
-/// `stage` reads the session's stage from its locked state `C`. `ended`
-/// gives the error to return if the session already has a result, which is
-/// `Closed` for a success. When the deadline passes first, `fail` settles
-/// the session with the error that fits the stage, `Capacity` while it
-/// waits for a slot (retryable) and `DeadlineExceeded` once it holds one,
-/// and that error is returned too.
+/// When the deadline passes first, the session fails with the error that
+/// fits its stage, `Capacity` while it waits for a slot (retryable) and
+/// `DeadlineExceeded` once it holds one, and that error is returned too.
 ///
 /// # Errors
 ///
-/// The session's own error, or the one described above.
-pub(crate) fn wait_open<C>(
-    changed: &Condvar,
-    core: MutexGuard<'_, C>,
-    deadline: Deadline,
-    stage: impl Fn(&C) -> Stage,
-    ended: impl Fn() -> Option<SpeechError>,
-    fail: impl FnOnce(MutexGuard<'_, C>, SpeechError),
-) -> Result<(), SpeechError> {
-    let (core, open) = deadline::wait_until(changed, core, deadline, |core| {
-        stage(core) == Stage::Open || ended().is_some()
-    });
-    if let Some(error) = ended() {
+/// The session's own error (`Closed` if it already succeeded), or the one
+/// described above.
+pub(crate) fn wait_open<S: Opens>(shared: &S, deadline: Deadline) -> Result<(), SpeechError> {
+    let (mut core, open) =
+        deadline::wait_until(shared.changed(), shared.lock(), deadline, |core| {
+            *S::stage(core) == Stage::Open || shared.ended()
+        });
+    if let Some(error) = shared.ended_error() {
         return Err(error);
     }
     if open {
         return Ok(());
     }
-    let error = match stage(&core) {
+    let error = match *S::stage(&mut core) {
         Stage::Slot => SpeechError::Capacity,
         Stage::Backend | Stage::Open => SpeechError::DeadlineExceeded,
     };
-    fail(core, error.clone());
+    shared.fail(&mut core, error.clone());
     Err(error)
 }

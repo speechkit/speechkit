@@ -24,7 +24,7 @@ use crate::{
     Deadline, SampleRate, SpeechError,
     speech::{
         deadline,
-        opening::Stage,
+        opening::{Opens, Stage},
         slots::SlotLimiter,
         sync::{Condvar, Mutex, MutexGuard, lock},
     },
@@ -180,6 +180,41 @@ impl Shared {
             confirmed: self.transcript(core),
         };
         self.settle(core, Err(failure));
+    }
+}
+
+impl Opens for Shared {
+    type Core = Core;
+
+    fn lock(&self) -> MutexGuard<'_, Core> {
+        Shared::lock(self)
+    }
+
+    fn changed(&self) -> &Condvar {
+        &self.changed
+    }
+
+    fn slots(&self) -> &SlotLimiter {
+        &self.slots
+    }
+
+    fn stage(core: &mut Core) -> &mut Stage {
+        &mut core.stage
+    }
+
+    fn ended(&self) -> bool {
+        self.terminal.get().is_some()
+    }
+
+    fn ended_error(&self) -> Option<SpeechError> {
+        self.terminal.get().map(|result| match result.as_ref() {
+            Err(failure) => failure.error.clone(),
+            Ok(_) => SpeechError::Closed,
+        })
+    }
+
+    fn fail(&self, core: &mut Core, error: SpeechError) {
+        self.settle_failure(core, error);
     }
 }
 

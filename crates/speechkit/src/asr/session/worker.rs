@@ -10,7 +10,12 @@ use super::{AsrEvents, Shared};
 use crate::{
     SampleRate, SpeechError,
     asr::{AsrBackend, AsrOptions, AsrStream},
-    speech::{deadline, opening::Stage, resample::Resampler, slots::SlotGuard},
+    speech::{
+        deadline,
+        opening::{Opens, open_stream},
+        resample::Resampler,
+        slots::SlotGuard,
+    },
 };
 
 /// Everything a session's thread owns before its stream opens.
@@ -41,57 +46,17 @@ impl Worker {
             block,
             slot,
         } = self;
-        let ended = || shared.terminal.get().is_some();
-        let slot = match slot {
-            Some(slot) => slot,
-            None => match shared.slots.acquire(ended) {
-                Some(slot) => slot,
-                None => return,
-            },
-        };
-        {
-            let mut core = shared.lock();
-            if ended() {
-                return;
-            }
-            core.stage = Stage::Backend;
-        }
         let name = backend.name().to_owned();
-        let events = AsrEvents::session(shared.clone());
-        // A failure to build the resampler ends the session like a failure to
-        // open the stream.
-        let opened = Resampler::new(from, to).and_then(|resampler| {
-            if ended() {
-                return Err(SpeechError::Closed);
-            }
-            let stream = catch_unwind(AssertUnwindSafe(|| backend.open(&options, events)))
-                .unwrap_or_else(|_| {
-                    Err(SpeechError::backend(
-                        name.clone(),
-                        false,
-                        "the backend panicked while opening a stream",
-                    ))
-                })?;
-            Ok((resampler, stream))
-        });
-        let (resampler, stream) = match opened {
-            Ok(opened) => opened,
-            Err(error) => {
-                // The slot goes before the result is published (A-09).
-                drop(slot);
-                let mut core = shared.lock();
-                shared.settle_failure(&mut core, error);
-                return;
-            }
+        let Some((slot, resampler, stream)) =
+            open_stream(&*shared, slot, (from, to), &name, || {
+                backend.open(&options, AsrEvents::session(shared.clone()))
+            })
+        else {
+            return;
         };
-        {
-            let mut core = shared.lock();
-            if !ended() {
-                core.stage = Stage::Open;
-                tracing::debug!(session = shared.id, backend = %name, "session started");
-            }
+        if !shared.ended() {
+            tracing::debug!(session = shared.id, backend = %name, "session started");
         }
-        shared.changed.notify_all();
         Running {
             shared,
             backend: name,

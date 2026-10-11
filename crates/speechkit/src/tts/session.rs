@@ -15,7 +15,7 @@ use crate::{
     Deadline, Flow, RecvError, SampleRate, SpeechError,
     speech::{
         deadline,
-        opening::Stage,
+        opening::{Opens, Stage, open_stream},
         resample::Resampler,
         slots::{SlotGuard, SlotLimiter},
         sync::{Condvar, Mutex, MutexGuard, lock},
@@ -422,6 +422,41 @@ impl PushedText {
     }
 }
 
+impl Opens for Shared {
+    type Core = Core;
+
+    fn lock(&self) -> MutexGuard<'_, Core> {
+        Shared::lock(self)
+    }
+
+    fn changed(&self) -> &Condvar {
+        &self.changed
+    }
+
+    fn slots(&self) -> &SlotLimiter {
+        &self.slots
+    }
+
+    fn stage(core: &mut Core) -> &mut Stage {
+        &mut core.stage
+    }
+
+    fn ended(&self) -> bool {
+        self.terminal.get().is_some()
+    }
+
+    fn ended_error(&self) -> Option<SpeechError> {
+        self.terminal.get().map(|result| match result.as_ref() {
+            Err(failure) => failure.error.clone(),
+            Ok(_) => SpeechError::Closed,
+        })
+    }
+
+    fn fail(&self, core: &mut Core, error: SpeechError) {
+        Shared::fail(self, core, error);
+    }
+}
+
 /// The two halves of a new session.
 pub(crate) fn halves(shared: &Arc<Shared>) -> (TtsSession, TtsOutput) {
     (
@@ -461,56 +496,15 @@ impl Worker {
             chunker,
             slot,
         } = self;
-        let ended = || shared.terminal.get().is_some();
-        let slot = match slot {
-            Some(slot) => slot,
-            None => match shared.slots.acquire(ended) {
-                Some(slot) => slot,
-                None => return,
-            },
-        };
-        {
-            let mut core = shared.lock();
-            if ended() {
-                return;
-            }
-            core.stage = Stage::Backend;
-        }
         let name = backend.name().to_owned();
-        // A failure to build the resampler ends the session like a failure to
-        // open the stream.
-        let opened = Resampler::new(from, to).and_then(|resampler| {
-            if ended() {
-                return Err(SpeechError::Closed);
-            }
-            let stream =
-                catch_unwind(AssertUnwindSafe(|| backend.open(&options))).unwrap_or_else(|_| {
-                    Err(SpeechError::backend(
-                        name.clone(),
-                        false,
-                        "the backend panicked while opening",
-                    ))
-                })?;
-            Ok((resampler, stream))
-        });
-        let (resampler, stream) = match opened {
-            Ok(opened) => opened,
-            Err(error) => {
-                // The slot goes before the result is published (T-11).
-                drop(slot);
-                let core = shared.lock();
-                shared.fail(&core, error);
-                return;
-            }
+        let Some((slot, resampler, stream)) =
+            open_stream(&*shared, slot, (from, to), &name, || backend.open(&options))
+        else {
+            return;
         };
-        {
-            let mut core = shared.lock();
-            if !ended() {
-                core.stage = Stage::Open;
-                tracing::debug!(session = shared.id, backend = %name, "synthesis started");
-            }
+        if !shared.ended() {
+            tracing::debug!(session = shared.id, backend = %name, "synthesis started");
         }
-        shared.changed.notify_all();
         Running {
             shared,
             backend: name,
