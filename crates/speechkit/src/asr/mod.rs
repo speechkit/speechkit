@@ -5,6 +5,7 @@
 //! `A-01` to `A-19`, whichever backend runs it; `speechkit-testkit` checks
 //! them for every backend.
 
+mod activity;
 pub(crate) mod backend;
 mod engine;
 pub(crate) mod options;
@@ -12,6 +13,7 @@ pub(crate) mod post;
 mod session;
 pub(crate) mod types;
 
+pub(crate) use activity::KnownActivity;
 pub use backend::{AsrBackend, AsrEvent, AsrStream};
 pub use engine::AsrEngine;
 pub(crate) use options::validate;

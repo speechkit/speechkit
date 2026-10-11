@@ -4,7 +4,7 @@ use std::{collections::HashSet, time::Duration};
 
 use crate::{
     SampleRate, SpeechError,
-    asr::{AsrEvent, Partial, Segment, UtteranceId},
+    asr::{AsrEvent, KnownActivity, Partial, Segment, UtteranceId},
 };
 
 use super::protocol::{BACKEND, Event, Sentence};
@@ -45,8 +45,7 @@ pub(crate) struct DashScopeState {
     speech: Option<Duration>,
     /// Where the last sentence ended.
     last_stop: Duration,
-    /// The last `ActivityKnown` sent.
-    known: Duration,
+    known: KnownActivity,
 }
 
 fn millis(value: f64) -> Duration {
@@ -65,7 +64,7 @@ impl DashScopeState {
             frames: 0,
             speech: None,
             last_stop: Duration::ZERO,
-            known: Duration::ZERO,
+            known: KnownActivity::default(),
         }
     }
 
@@ -83,9 +82,9 @@ impl DashScopeState {
 
     /// The task finished: activity is known to the end of the audio.
     pub(crate) fn finished(&mut self) -> Vec<AsrEvent> {
-        let through = self.sent_time();
-        if self.speech.is_none() && through > self.known {
-            self.known = through;
+        if self.speech.is_none()
+            && let Some(through) = self.known.advance(self.sent_time(), None)
+        {
             return vec![AsrEvent::ActivityKnown { through }];
         }
         Vec::new()
@@ -96,9 +95,7 @@ impl DashScopeState {
             .sent_time()
             .saturating_sub(self.lag)
             .max(self.last_stop);
-        let through = self.speech.map_or(candidate, |start| candidate.min(start));
-        if through > self.known {
-            self.known = through;
+        if let Some(through) = self.known.advance(candidate, self.speech) {
             out.push(AsrEvent::ActivityKnown { through });
         }
     }
@@ -107,7 +104,7 @@ impl DashScopeState {
     /// sentence has no time.
     fn start(&mut self, begin: Option<f64>, out: &mut Vec<AsrEvent>) {
         if self.speech.is_none() {
-            let at = begin.map_or(self.known, millis);
+            let at = begin.map_or(self.known.get(), millis);
             self.speech = Some(at);
             out.push(AsrEvent::SpeechStarted { at });
         }

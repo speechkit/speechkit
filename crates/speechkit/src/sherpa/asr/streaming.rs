@@ -5,8 +5,8 @@ use std::{sync::Arc, time::Duration};
 use crate::{
     SampleRate, SpeechError,
     asr::{
-        AsrBackend, AsrCapabilities, AsrEvent, AsrEvents, AsrOptions, AsrStream, Partial, Segment,
-        UtteranceId,
+        AsrBackend, AsrCapabilities, AsrEvent, AsrEvents, AsrOptions, AsrStream, KnownActivity,
+        Partial, Segment, UtteranceId,
     },
 };
 use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig, OnlineStream};
@@ -225,7 +225,7 @@ impl AsrBackend for SherpaStreaming {
             start: Duration::ZERO,
             tokens: None,
             speech: None,
-            known: Duration::ZERO,
+            known: KnownActivity::default(),
         }))
     }
 }
@@ -255,8 +255,7 @@ struct Stream {
     /// Where the speech in progress started, once `SpeechStarted` was
     /// sent for it and until it ends. A cut does not end it.
     speech: Option<Duration>,
-    /// The last `ActivityKnown` sent.
-    known: Duration,
+    known: KnownActivity,
 }
 
 fn at(samples: u64) -> Duration {
@@ -340,9 +339,7 @@ impl Stream {
         } else {
             fed.saturating_sub(LATENCY)
         };
-        let through = self.speech.map_or(known, |start| start.min(known));
-        if through > self.known {
-            self.known = through;
+        if let Some(through) = self.known.advance(known, self.speech) {
             events.push(AsrEvent::ActivityKnown { through });
         }
         Ok(events)

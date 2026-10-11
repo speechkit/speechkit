@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::{SpeechSegment, Vad};
-use crate::SampleRate;
+use crate::{SampleRate, asr::KnownActivity};
 
 /// One thing a [`Tracker`] found, in order.
 #[derive(Debug)]
@@ -35,8 +35,7 @@ pub(crate) struct Tracker {
     /// The start of the speech in progress, once reported and until it
     /// ends. After a cut, the start of the rest.
     speech: Option<Duration>,
-    /// The last point reported as known.
-    known: Duration,
+    known: KnownActivity,
 }
 
 impl Tracker {
@@ -49,7 +48,7 @@ impl Tracker {
             start_delay,
             fed: 0,
             speech: None,
-            known: Duration::ZERO,
+            known: KnownActivity::default(),
         }
     }
 
@@ -107,9 +106,7 @@ impl Tracker {
             self.speech = Some(start);
             out.push(Detected::Started(start));
         }
-        let through = self.speech.map_or(known, |start| start.min(known));
-        if through > self.known {
-            self.known = through;
+        if let Some(through) = self.known.advance(known, self.speech) {
             out.push(Detected::Known(through));
         }
         out

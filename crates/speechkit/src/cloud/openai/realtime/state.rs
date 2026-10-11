@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     SampleRate, SpeechError,
-    asr::{AsrEvent, Partial, Segment, UtteranceId},
+    asr::{AsrEvent, KnownActivity, Partial, Segment, UtteranceId},
 };
 
 use super::protocol::{COMMIT_EMPTY, Event};
@@ -65,8 +65,7 @@ pub(crate) struct RealtimeState {
     last_stop: Duration,
     /// How far the client VAD knows activity.
     client_known: Duration,
-    /// The last `ActivityKnown` sent.
-    known: Duration,
+    known: KnownActivity,
     /// Items committed so far.
     committed: HashSet<String>,
     /// IDs the stream reserved for commits it sent, in order.
@@ -109,7 +108,7 @@ impl RealtimeState {
             speech: None,
             last_stop: Duration::ZERO,
             client_known: Duration::ZERO,
-            known: Duration::ZERO,
+            known: KnownActivity::default(),
             committed: HashSet::new(),
             reserved: VecDeque::new(),
             items: HashMap::new(),
@@ -232,12 +231,11 @@ impl RealtimeState {
     /// The session settled: activity is known to the end of the audio.
     pub(crate) fn finished(&mut self) -> Vec<AsrEvent> {
         let mut out = Vec::new();
-        if self.activity != Activity::None && self.speech.is_none() {
-            let through = self.sent_time();
-            if through > self.known {
-                self.known = through;
-                out.push(AsrEvent::ActivityKnown { through });
-            }
+        if self.activity != Activity::None
+            && self.speech.is_none()
+            && let Some(through) = self.known.advance(self.sent_time(), None)
+        {
+            out.push(AsrEvent::ActivityKnown { through });
         }
         out
     }
@@ -249,9 +247,7 @@ impl RealtimeState {
             Activity::Server { lag } => self.sent_time().saturating_sub(lag).max(self.last_stop),
             Activity::Client => self.client_known,
         };
-        let through = self.speech.map_or(candidate, |start| candidate.min(start));
-        if through > self.known {
-            self.known = through;
+        if let Some(through) = self.known.advance(candidate, self.speech) {
             out.push(AsrEvent::ActivityKnown { through });
         }
     }
