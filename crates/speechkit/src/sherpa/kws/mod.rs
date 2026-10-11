@@ -218,13 +218,6 @@ fn check_threshold(threshold: f32) -> Result<(), SpeechError> {
     }
 }
 
-fn vocabulary(tokens: &str) -> HashSet<&str> {
-    tokens
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .collect()
-}
-
 fn read(path: &Path, what: &str) -> Result<String, SpeechError> {
     std::fs::read_to_string(path).map_err(|e| {
         SpeechError::InvalidModel(format!("cannot read {what} {}: {e}", path.display()))
@@ -253,7 +246,7 @@ fn compile(
             "no keywords; list them with KeywordSpotterConfig::with_keywords".into(),
         ));
     }
-    let vocabulary = vocabulary(tokens);
+    let vocabulary: HashSet<&str> = layout::token_strings(tokens).collect();
     let mut buffer = String::new();
     let mut names = HashMap::new();
     for (index, keyword) in keywords.iter().enumerate() {

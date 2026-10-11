@@ -34,37 +34,6 @@ pub(crate) struct OfflineConfig {
     pub prompt_hints: Vec<String>,
 }
 
-/// What each offline family accepts, checked again when it loads.
-///
-/// # Errors
-///
-/// [`SpeechError::Unsupported`] for a family used here that does not fit,
-/// or an option the family does not support.
-pub(super) fn check_family_options(
-    family: AsrFamily,
-    bias: bool,
-    prompt_hints: bool,
-) -> Result<(), SpeechError> {
-    let unsupported = |what: &str| {
-        Err(SpeechError::Unsupported(format!(
-            "the {family} family does not support {what}"
-        )))
-    };
-    match family {
-        AsrFamily::StreamingTransducer | AsrFamily::SenseVoice => Err(SpeechError::Unsupported(
-            format!("the {family} family has its own backend type"),
-        )),
-        AsrFamily::OfflineTransducer if prompt_hints => unsupported("prompt hints"),
-        AsrFamily::Qwen3Asr | AsrFamily::FunAsrNano if bias => unsupported("decoding bias"),
-        AsrFamily::Paraformer | AsrFamily::FireRedCtc | AsrFamily::FireRedAed
-            if bias || prompt_hints =>
-        {
-            unsupported("hints or decoding bias")
-        }
-        _ => Ok(()),
-    }
-}
-
 /// An offline recognizer for one of the families [`OfflineConfig`] names.
 ///
 /// None of these families accept a language override. Transducers with
@@ -78,22 +47,15 @@ pub(crate) struct GenericOffline {
 }
 
 impl GenericOffline {
-    /// Loads the model from the files and bias `AsrConfig` checked.
+    /// Loads the model from the files, bias, and hints `AsrConfig`
+    /// checked.
     ///
     /// # Errors
     ///
-    /// [`SpeechError::Unsupported`] for options the family lacks,
-    /// [`SpeechError::InvalidInput`] for bad settings or hints, and
     /// [`SpeechError::InvalidModel`] for a model the native library
     /// rejects.
     pub(crate) fn load(mut config: OfflineConfig) -> Result<Self, SpeechError> {
         let family = config.family;
-        check_family_options(
-            family,
-            config.bias.is_some(),
-            !config.prompt_hints.is_empty(),
-        )?;
-        config.inference.validate()?;
         let mut native = OfflineRecognizerConfig::default();
         native.model_config.num_threads = config.inference.threads_i32();
         native.model_config.provider = Some(config.inference.provider.as_str().into());
@@ -141,7 +103,7 @@ fn configure(
                 mc.bpe_vocab = prepared.bpe_vocab;
                 native.decoding_method = Some("modified_beam_search".into());
                 native.max_active_paths = 4;
-                native.hotwords_score = prepared.score;
+                native.hotwords_score = bias::DEFAULT_SCORE;
                 return Ok(prepared.hotwords);
             }
         }
@@ -243,42 +205,5 @@ impl fmt::Debug for GenericOffline {
             .field("family", &self.family)
             .field("caps", &self.caps)
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Which options each family accepts or rejects, as a table.
-    #[test]
-    fn family_option_table() {
-        use AsrFamily as F;
-        let rows = [
-            (F::OfflineTransducer, false, false, true),
-            (F::OfflineTransducer, true, false, true),
-            (F::OfflineTransducer, false, true, false),
-            (F::Paraformer, false, false, true),
-            (F::Paraformer, true, false, false),
-            (F::Paraformer, false, true, false),
-            (F::FireRedCtc, true, false, false),
-            (F::FireRedCtc, false, true, false),
-            (F::FireRedAed, false, false, true),
-            (F::FireRedAed, true, false, false),
-            (F::FireRedAed, false, true, false),
-            (F::Qwen3Asr, false, true, true),
-            (F::Qwen3Asr, true, false, false),
-            (F::FunAsrNano, false, true, true),
-            (F::FunAsrNano, true, false, false),
-            (F::SenseVoice, false, false, false),
-            (F::StreamingTransducer, false, false, false),
-        ];
-        for (family, bias, prompt, ok) in rows {
-            let result = check_family_options(family, bias, prompt);
-            assert_eq!(result.is_ok(), ok, "{family} bias={bias} prompt={prompt}");
-            if let Err(error) = result {
-                assert!(matches!(error, SpeechError::Unsupported(_)), "{error}");
-            }
-        }
     }
 }

@@ -9,15 +9,13 @@ use crate::{
     SpeechError,
     asr::{AsrBackend, AsrCapabilities, AsrEvents, AsrOptions, AsrStream},
     sherpa::{
-        AsrFamily, Inference, SileroVad, SileroVadConfig,
+        AsrFamily, Inference, SileroVadConfig,
         asr::{
             PreparedBias, SherpaStreaming, StreamingConfig,
-            offline::{
-                GenericOffline, OfflineConfig, SenseVoice, SenseVoiceConfig, SenseVoiceLanguage,
-            },
+            offline::{GenericOffline, OfflineConfig, SenseVoice, SenseVoiceConfig},
             prepare_bias,
         },
-        bias::{self, BiasPhrase, DEFAULT_SCORE, TransducerBias},
+        bias,
         config::{ModelFiles, resolve},
         layout::list_dir,
         vad::MAX_SPEECH,
@@ -171,28 +169,50 @@ impl AsrConfig {
     /// rejects.
     pub fn load(&self) -> Result<Asr, SpeechError> {
         let (family, files, bias) = self.check()?;
-        let recognizer = match family {
-            AsrFamily::StreamingTransducer => {
-                Recognizer::Streaming(SherpaStreaming::load(StreamingConfig {
-                    files,
-                    inference: self.inference,
-                    bias,
-                    endpoint_silence: self.endpoint_silence,
-                    max_utterance: self.max_utterance,
-                })?)
-            }
+        let backend: Box<dyn AsrBackend> = match family {
+            AsrFamily::StreamingTransducer => Box::new(SherpaStreaming::load(StreamingConfig {
+                files,
+                inference: self.inference,
+                bias,
+                endpoint_silence: self.endpoint_silence,
+                max_utterance: self.max_utterance,
+            })?),
             family => {
-                let model = Offline::open(self, family, files, bias)?;
+                let model = self.load_offline(family, files, bias)?;
                 let vad = match &self.vad {
                     Some(vad) => vad.load()?,
                     None => return Err(SpeechError::InvalidInput("no VAD".into())),
                 };
-                Recognizer::Offline(
-                    VadBackend::new(model, vad)?.with_max_utterance(self.max_utterance),
-                )
+                Box::new(VadBackend::new(model, vad)?.with_max_utterance(self.max_utterance))
             }
         };
-        Ok(Asr { recognizer, family })
+        Ok(Asr { backend, family })
+    }
+
+    /// Loads the offline model of `family`, from its checked files and
+    /// bias.
+    fn load_offline(
+        &self,
+        family: AsrFamily,
+        files: ModelFiles,
+        bias: Option<PreparedBias>,
+    ) -> Result<Box<dyn OfflineRecognizer>, SpeechError> {
+        let inference = self.inference;
+        Ok(if family == AsrFamily::SenseVoice {
+            Box::new(SenseVoice::load(SenseVoiceConfig {
+                files,
+                language: self.language.as_deref().unwrap_or("auto"),
+                inference,
+            })?)
+        } else {
+            Box::new(GenericOffline::load(OfflineConfig {
+                files,
+                family,
+                inference,
+                bias,
+                prompt_hints: self.prompt(family),
+            })?)
+        })
     }
 
     /// Validates, and returns the family, its files, and the prepared
@@ -212,19 +232,7 @@ impl AsrConfig {
             )))
         };
         let bias = match &self.hotwords {
-            Some(hotwords) if family.takes_bias() => {
-                let bias = TransducerBias {
-                    phrases: hotwords
-                        .iter()
-                        .map(|text| BiasPhrase {
-                            text: text.clone(),
-                            score: None,
-                        })
-                        .collect(),
-                    default_score: DEFAULT_SCORE,
-                };
-                Some(prepare_bias(&bias, &files)?)
-            }
+            Some(hotwords) if family.takes_bias() => Some(prepare_bias(hotwords, &files)?),
             Some(_) if family.supports_hotwords() => {
                 bias::prompt(&self.prompt(family), family == AsrFamily::FunAsrNano)?;
                 None
@@ -315,19 +323,14 @@ fn detect(dir: &Path) -> Result<AsrFamily, SpeechError> {
     }
 }
 
-/// The recognizer a family runs on.
-enum Recognizer {
-    Streaming(SherpaStreaming),
-    Offline(VadBackend<Offline, SileroVad>),
-}
-
 /// A loaded sherpa-onnx recognizer, for any family.
 ///
 /// A streaming transducer reports partial results and commits a segment at
 /// each pause; the offline families commit one segment per utterance the
 /// VAD finds. [`AsrConfig::load`] makes one.
 pub struct Asr {
-    recognizer: Recognizer,
+    /// A streaming transducer, or an offline model behind the VAD.
+    backend: Box<dyn AsrBackend>,
     family: AsrFamily,
 }
 
@@ -336,22 +339,15 @@ impl Asr {
     pub fn family(&self) -> AsrFamily {
         self.family
     }
-
-    fn backend(&self) -> &dyn AsrBackend {
-        match &self.recognizer {
-            Recognizer::Streaming(backend) => backend,
-            Recognizer::Offline(backend) => backend,
-        }
-    }
 }
 
 impl AsrBackend for Asr {
     fn name(&self) -> &str {
-        self.backend().name()
+        self.backend.name()
     }
 
     fn capabilities(&self) -> &AsrCapabilities {
-        self.backend().capabilities()
+        self.backend.capabilities()
     }
 
     fn open(
@@ -359,91 +355,13 @@ impl AsrBackend for Asr {
         opts: &AsrOptions,
         events: AsrEvents,
     ) -> Result<Box<dyn AsrStream>, SpeechError> {
-        self.backend().open(opts, events)
+        self.backend.open(opts, events)
     }
 }
 
 impl std::fmt::Debug for Asr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Asr")
-            .field("family", &self.family)
-            .field("capabilities", self.capabilities())
-            .finish_non_exhaustive()
-    }
-}
-
-/// A sherpa-onnx offline model: SenseVoice, Paraformer, an offline
-/// transducer, FireRedASR, Qwen3-ASR, or FunASR-Nano, as an
-/// [`OfflineRecognizer`] that recognizes the audio of each call as one
-/// utterance. [`Asr`] runs it behind silero VAD.
-pub(crate) struct Offline {
-    model: OfflineModel,
-    family: AsrFamily,
-}
-
-/// The model an offline family runs on.
-enum OfflineModel {
-    SenseVoice(SenseVoice),
-    Other(GenericOffline),
-}
-
-impl Offline {
-    /// Loads the offline model `config` describes, from its checked files
-    /// and bias.
-    fn open(
-        config: &AsrConfig,
-        family: AsrFamily,
-        files: ModelFiles,
-        bias: Option<PreparedBias>,
-    ) -> Result<Self, SpeechError> {
-        let inference = config.inference;
-        let model = if family == AsrFamily::SenseVoice {
-            let language = match &config.language {
-                Some(language) => language.parse()?,
-                None => SenseVoiceLanguage::Auto,
-            };
-            OfflineModel::SenseVoice(SenseVoice::load(&SenseVoiceConfig {
-                files,
-                language,
-                inference,
-            })?)
-        } else {
-            OfflineModel::Other(GenericOffline::load(OfflineConfig {
-                files,
-                family,
-                inference,
-                bias,
-                prompt_hints: config.prompt(family),
-            })?)
-        };
-        Ok(Self { model, family })
-    }
-
-    fn recognizer(&self) -> &dyn OfflineRecognizer {
-        match &self.model {
-            OfflineModel::SenseVoice(model) => model,
-            OfflineModel::Other(model) => model,
-        }
-    }
-}
-
-impl OfflineRecognizer for Offline {
-    fn name(&self) -> &str {
-        self.recognizer().name()
-    }
-
-    fn capabilities(&self) -> &AsrCapabilities {
-        self.recognizer().capabilities()
-    }
-
-    fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError> {
-        self.recognizer().recognize(samples, opts)
-    }
-}
-
-impl std::fmt::Debug for Offline {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Offline")
             .field("family", &self.family)
             .field("capabilities", self.capabilities())
             .finish_non_exhaustive()

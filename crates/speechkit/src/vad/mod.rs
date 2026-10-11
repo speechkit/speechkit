@@ -85,3 +85,19 @@ pub trait OfflineRecognizer: Send + Sync + 'static {
     /// Any error the recognizer hits. The session fails with it.
     fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError>;
 }
+
+/// A boxed recognizer, so a `Box<dyn OfflineRecognizer>` can run behind a
+/// VAD.
+impl<R: OfflineRecognizer + ?Sized> OfflineRecognizer for Box<R> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+
+    fn capabilities(&self) -> &AsrCapabilities {
+        (**self).capabilities()
+    }
+
+    fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError> {
+        (**self).recognize(samples, opts)
+    }
+}

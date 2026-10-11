@@ -13,7 +13,7 @@ use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig, OnlineStream};
 
 use super::{RATE, TAIL_PADDING, native};
 use crate::sherpa::{
-    bias::{self, ModelingUnit, TransducerBias, Vocabulary},
+    bias::{self, ModelingUnit, Vocabulary},
     config::{Inference, ModelFiles},
     layout::AsrFiles,
 };
@@ -70,7 +70,7 @@ pub(crate) struct Hotwords {
 impl Hotwords {
     /// The hotwords for a session, or `None` for plain decoding.
     pub(crate) fn for_session(&self, opts: &AsrOptions) -> Result<Option<String>, SpeechError> {
-        bias::check_session_hints(&opts.hints)?;
+        bias::check_transducer_phrases(&opts.hints)?;
         opts.hints
             .iter()
             .try_for_each(|phrase| self.vocabulary.check(phrase))?;
@@ -78,22 +78,23 @@ impl Hotwords {
     }
 }
 
-/// What configuring `bias` means for a transducer in `model`: the unit,
-/// `bpe.vocab`, the boost of phrases without their own, and the checked
-/// phrases.
+/// What decoding bias toward `phrases` means for a transducer in
+/// `model`: the unit, `bpe.vocab`, and the checked phrases. Configuring
+/// it, even with no phrases, switches decoding to modified beam search,
+/// which costs roughly 2–4× greedy decoding, and lets sessions pass their
+/// own hints.
 #[derive(Debug)]
 pub(crate) struct PreparedBias {
     pub(crate) unit: ModelingUnit,
     pub(crate) bpe_vocab: Option<String>,
-    pub(crate) score: f32,
     pub(crate) hotwords: Hotwords,
 }
 
 pub(crate) fn prepare_bias(
-    bias: &TransducerBias,
+    phrases: &[String],
     model: &ModelFiles,
 ) -> Result<PreparedBias, SpeechError> {
-    bias.validate()?;
+    bias::check_transducer_phrases(phrases)?;
     let AsrFiles::Transducer {
         tokens, bpe_vocab, ..
     } = &model.files
@@ -117,15 +118,14 @@ pub(crate) fn prepare_bias(
         None
     };
     let vocabulary = Vocabulary::new(unit, &text);
-    bias.phrases
+    phrases
         .iter()
-        .try_for_each(|phrase| vocabulary.check(&phrase.text))?;
+        .try_for_each(|phrase| vocabulary.check(phrase))?;
     Ok(PreparedBias {
         unit,
         bpe_vocab,
-        score: bias.default_score,
         hotwords: Hotwords {
-            engine: bias.render(),
+            engine: bias::merge(None, phrases)?,
             vocabulary,
         },
     })
@@ -136,10 +136,8 @@ impl SherpaStreaming {
     ///
     /// # Errors
     ///
-    /// [`SpeechError::InvalidInput`] for bad settings, or
     /// [`SpeechError::InvalidModel`] for a model the native library rejects.
     pub(crate) fn load(config: StreamingConfig) -> Result<Self, SpeechError> {
-        config.inference.validate()?;
         let model = &config.files;
         let AsrFiles::Transducer {
             encoder,
@@ -165,7 +163,7 @@ impl SherpaStreaming {
             Some(prepared) => {
                 native_config.decoding_method = Some("modified_beam_search".into());
                 native_config.max_active_paths = 4;
-                native_config.hotwords_score = prepared.score;
+                native_config.hotwords_score = bias::DEFAULT_SCORE;
                 native_config.model_config.modeling_unit = Some(prepared.unit.as_str().into());
                 native_config.model_config.bpe_vocab = prepared.bpe_vocab;
                 hotwords = prepared.hotwords;

@@ -151,6 +151,13 @@ fn invalid(message: impl Into<String>) -> SpeechError {
     SpeechError::InvalidModel(message.into())
 }
 
+/// The token strings of a `tokens.txt`: the first field of each line.
+pub(crate) fn token_strings(tokens: &str) -> impl Iterator<Item = &str> {
+    tokens
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+}
+
 /// The names `preferred` accepts, or all of them if it accepts none.
 fn prefer(names: Vec<&str>, preferred: impl Fn(&str) -> bool) -> Vec<&str> {
     if names.iter().any(|name| preferred(name)) {

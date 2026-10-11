@@ -8,7 +8,7 @@ use std::{collections::HashMap, path::Path};
 
 use pinyin::ToPinyin;
 
-use crate::SpeechError;
+use crate::{SpeechError, sherpa::layout::token_strings};
 
 /// Pinyin initials, two-letter ones first. `y` and `w` count as initials,
 /// as in the models' training labels.
@@ -16,20 +16,6 @@ const INITIALS: [&str; 23] = [
     "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r",
     "z", "c", "s", "y", "w",
 ];
-
-/// How a model spells keywords.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum KeywordUnit {
-    /// `SentencePiece` pieces from `bpe.model`, for English models such as
-    /// `kws-zipformer-gigaspeech`.
-    Bpe,
-    /// Pinyin initials and toned finals, for Chinese models such as
-    /// `kws-zipformer-wenetspeech`.
-    Pinyin,
-    /// Pinyin for Chinese characters and `ARPAbet` phones from `en.phone`
-    /// for English words, for `kws-zipformer-zh-en`.
-    PhonePinyin,
-}
 
 /// Spells keyword phrases, such as "Hi Jarvis" or "小爱同学", in the tokens
 /// of one keyword spotting model.
@@ -40,18 +26,24 @@ pub(crate) enum KeywordUnit {
 /// [`Keyword::with_tokens`](super::Keyword::with_tokens).
 pub(crate) struct KeywordTokenizer(Speller);
 
-/// A [`KeywordUnit`] with what it needs to spell.
+/// How a model spells keywords, with what it needs to spell.
 enum Speller {
+    /// `SentencePiece` pieces from `bpe.model`, for English models such as
+    /// `kws-zipformer-gigaspeech`.
     Bpe(Unigram),
+    /// Pinyin initials and toned finals, for Chinese models such as
+    /// `kws-zipformer-wenetspeech`.
     Pinyin,
-    /// The lexicon maps an uppercased word to its phones.
+    /// Pinyin for Chinese characters and `ARPAbet` phones from `en.phone`
+    /// for English words, for `kws-zipformer-zh-en`. The lexicon maps an
+    /// uppercased word to its phones.
     PhonePinyin(HashMap<String, Vec<String>>),
 }
 
 impl std::fmt::Debug for KeywordTokenizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("KeywordTokenizer")
-            .field(&self.unit())
+            .field(&self.kind())
             .finish()
     }
 }
@@ -67,17 +59,14 @@ fn read(path: &Path) -> Result<String, SpeechError> {
 
 /// Whether `tokens.txt` has toned pinyin finals.
 fn has_pinyin(tokens: &str) -> bool {
-    tokens
-        .lines()
-        .any(|line| matches!(line.split_whitespace().next(), Some("ǎo" | "ǐ")))
+    token_strings(tokens).any(|token| matches!(token, "ǎo" | "ǐ"))
 }
 
 impl KeywordTokenizer {
     /// Reads the tokenizer of the model whose tokens are in `tokens`
     /// (`tokens.txt`). The kind is found from the files: `bpe.model` next
-    /// to `tokens.txt` means [`KeywordUnit::Bpe`],
-    /// `en.phone` means [`KeywordUnit::PhonePinyin`], and toned pinyin
-    /// finals (`ǎo`) in `tokens.txt` mean [`KeywordUnit::Pinyin`].
+    /// to `tokens.txt` means BPE pieces, `en.phone` means phones and
+    /// pinyin, and toned pinyin finals (`ǎo`) in `tokens.txt` mean pinyin.
     ///
     /// # Errors
     ///
@@ -93,12 +82,14 @@ impl KeywordTokenizer {
     pub(crate) fn detect(path: &Path, tokens: &str) -> Result<Self, SpeechError> {
         let bpe = path.with_file_name("bpe.model");
         let phones = path.with_file_name("en.phone");
-        let unit = if bpe.is_file() {
-            KeywordUnit::Bpe
+        let speller = if bpe.is_file() {
+            let bytes = std::fs::read(&bpe)
+                .map_err(|e| invalid_model(format!("cannot read {}: {e}", bpe.display())))?;
+            Speller::Bpe(Unigram::parse(&bytes)?)
         } else if phones.is_file() {
-            KeywordUnit::PhonePinyin
+            Speller::PhonePinyin(parse_lexicon(&read(&phones)?))
         } else if has_pinyin(tokens) {
-            KeywordUnit::Pinyin
+            Speller::Pinyin
         } else {
             return Err(SpeechError::Unsupported(format!(
                 "cannot spell keyword phrases for the model with {}: it has no bpe.model or \
@@ -107,24 +98,15 @@ impl KeywordTokenizer {
                 path.display()
             )));
         };
-        let speller = match unit {
-            KeywordUnit::Bpe => {
-                let bytes = std::fs::read(&bpe)
-                    .map_err(|e| invalid_model(format!("cannot read {}: {e}", bpe.display())))?;
-                Speller::Bpe(Unigram::parse(&bytes)?)
-            }
-            KeywordUnit::PhonePinyin => Speller::PhonePinyin(parse_lexicon(&read(&phones)?)),
-            KeywordUnit::Pinyin => Speller::Pinyin,
-        };
         Ok(Self(speller))
     }
 
-    /// How the model spells keywords.
-    pub(crate) fn unit(&self) -> KeywordUnit {
+    /// How the model spells keywords: `Bpe`, `Pinyin`, or `PhonePinyin`.
+    fn kind(&self) -> &'static str {
         match self.0 {
-            Speller::Bpe(_) => KeywordUnit::Bpe,
-            Speller::Pinyin => KeywordUnit::Pinyin,
-            Speller::PhonePinyin(_) => KeywordUnit::PhonePinyin,
+            Speller::Bpe(_) => "Bpe",
+            Speller::Pinyin => "Pinyin",
+            Speller::PhonePinyin(_) => "PhonePinyin",
         }
     }
 
@@ -500,9 +482,9 @@ mod model_tests {
         }
     }
 
-    fn check_spellings(dir: &Path, unit: KeywordUnit, raw: Option<&str>, tokenized: &str) {
+    fn check_spellings(dir: &Path, kind: &str, raw: Option<&str>, tokenized: &str) {
         let loaded = tokenizer(dir);
-        assert_eq!(loaded.unit(), unit);
+        assert_eq!(loaded.kind(), kind);
         for (phrase, expected) in examples(dir, raw, tokenized) {
             assert_eq!(spell(&loaded, &phrase), expected, "{phrase}");
         }
@@ -514,12 +496,7 @@ mod model_tests {
         let Some(dir) = model_dir("kws-en") else {
             return;
         };
-        check_spellings(
-            &dir,
-            KeywordUnit::Bpe,
-            Some("keywords_raw.txt"),
-            "keywords.txt",
-        );
+        check_spellings(&dir, "Bpe", Some("keywords_raw.txt"), "keywords.txt");
     }
 
     #[test]
@@ -528,13 +505,8 @@ mod model_tests {
         let Some(dir) = model_dir("kws-zh") else {
             return;
         };
-        check_spellings(&dir, KeywordUnit::Pinyin, None, "keywords.txt");
-        check_spellings(
-            &dir,
-            KeywordUnit::Pinyin,
-            None,
-            "test_wavs/test_keywords.txt",
-        );
+        check_spellings(&dir, "Pinyin", None, "keywords.txt");
+        check_spellings(&dir, "Pinyin", None, "test_wavs/test_keywords.txt");
     }
 
     #[test]
@@ -545,7 +517,7 @@ mod model_tests {
         };
         check_spellings(
             &dir,
-            KeywordUnit::PhonePinyin,
+            "PhonePinyin",
             Some("test_wavs/keywords_raw.txt"),
             "test_wavs/keywords.txt",
         );

@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     fmt,
-    str::FromStr,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -20,79 +19,26 @@ use crate::sherpa::{
     load_failed,
 };
 
-/// A language SenseVoice accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub(crate) enum SenseVoiceLanguage {
-    /// Detect the language.
-    #[default]
-    Auto,
-    /// Mandarin Chinese.
-    Zh,
-    /// English.
-    En,
-    /// Japanese.
-    Ja,
-    /// Korean.
-    Ko,
-    /// Cantonese.
-    Yue,
-}
-
-impl SenseVoiceLanguage {
-    /// Every language, in the order of [`SENSE_VOICE_LANGUAGES`].
-    const ALL: [Self; 6] = [
-        Self::Auto,
-        Self::Zh,
-        Self::En,
-        Self::Ja,
-        Self::Ko,
-        Self::Yue,
-    ];
-
-    /// The code sherpa-onnx uses.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Zh => "zh",
-            Self::En => "en",
-            Self::Ja => "ja",
-            Self::Ko => "ko",
-            Self::Yue => "yue",
-        }
-    }
-}
-
-impl fmt::Display for SenseVoiceLanguage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for SenseVoiceLanguage {
-    type Err = SpeechError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|language| language.as_str() == value)
-            .ok_or_else(|| {
-                SpeechError::InvalidInput(format!(
-                    "SenseVoice does not support language {value:?}; use one of {}",
-                    SENSE_VOICE_LANGUAGES.join(", ")
-                ))
-            })
-    }
+/// The code of `value`, one of [`SENSE_VOICE_LANGUAGES`].
+fn language(value: &str) -> Result<&'static str, SpeechError> {
+    SENSE_VOICE_LANGUAGES
+        .into_iter()
+        .find(|code| *code == value)
+        .ok_or_else(|| {
+            SpeechError::InvalidInput(format!(
+                "SenseVoice does not support language {value:?}; use one of {}",
+                SENSE_VOICE_LANGUAGES.join(", ")
+            ))
+        })
 }
 
 /// Settings for [`SenseVoice`], checked by `AsrConfig`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub(crate) struct SenseVoiceConfig {
+#[derive(Debug)]
+pub(crate) struct SenseVoiceConfig<'a> {
     /// The model's files.
     pub files: ModelFiles,
-    /// The language used when a session names none. Default: auto.
-    pub language: SenseVoiceLanguage,
+    /// The language used when a session names none, such as `auto`.
+    pub language: &'a str,
     /// Where and how the model runs.
     pub inference: Inference,
 }
@@ -104,9 +50,12 @@ pub(crate) struct SenseVoiceConfig {
 /// that overrides the language gets a recognizer built for it on first use
 /// and cached for later sessions. Each costs as much memory as the first.
 pub(crate) struct SenseVoice {
-    config: SenseVoiceConfig,
+    files: ModelFiles,
+    inference: Inference,
+    /// The language used when a session names none.
+    language: &'static str,
     caps: AsrCapabilities,
-    recognizers: Mutex<HashMap<SenseVoiceLanguage, Arc<NativeRecognizer>>>,
+    recognizers: Mutex<HashMap<&'static str, Arc<NativeRecognizer>>>,
 }
 
 impl SenseVoice {
@@ -114,35 +63,33 @@ impl SenseVoice {
     ///
     /// # Errors
     ///
-    /// [`SpeechError::InvalidInput`] for bad settings, or
+    /// [`SpeechError::InvalidInput`] for a language SenseVoice lacks, or
     /// [`SpeechError::InvalidModel`] for a model the native library
     /// rejects.
-    pub(crate) fn load(config: &SenseVoiceConfig) -> Result<Self, SpeechError> {
-        config.inference.validate()?;
+    pub(crate) fn load(config: SenseVoiceConfig<'_>) -> Result<Self, SpeechError> {
         let mut caps = AsrCapabilities::new(SampleRate::HZ_16000);
         caps.accepts_language = true;
         caps.punctuated = true;
         let model = Self {
-            config: config.clone(),
+            files: config.files,
+            inference: config.inference,
+            language: language(config.language)?,
             caps,
             recognizers: Mutex::default(),
         };
-        model.recognizer(config.language)?;
+        model.recognizer(model.language)?;
         Ok(model)
     }
 
-    fn recognizer(
-        &self,
-        language: SenseVoiceLanguage,
-    ) -> Result<Arc<NativeRecognizer>, SpeechError> {
+    fn recognizer(&self, language: &'static str) -> Result<Arc<NativeRecognizer>, SpeechError> {
         let mut cache = self
             .recognizers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(recognizer) = cache.get(&language) {
+        if let Some(recognizer) = cache.get(language) {
             return Ok(recognizer.clone());
         }
-        let files = &self.config.files;
+        let files = &self.files;
         let AsrFiles::Flat { model, tokens } = &files.files else {
             return Err(SpeechError::InvalidModel(
                 "not a flat model directory".into(),
@@ -151,11 +98,11 @@ impl SenseVoice {
         let path = |name: &String| Some(files.path(name).to_string_lossy().into_owned());
         let mut native_config = OfflineRecognizerConfig::default();
         native_config.model_config.sense_voice.model = path(model);
-        native_config.model_config.sense_voice.language = Some(language.as_str().into());
+        native_config.model_config.sense_voice.language = Some(language.into());
         native_config.model_config.sense_voice.use_itn = true;
         native_config.model_config.tokens = path(tokens);
-        native_config.model_config.num_threads = self.config.inference.threads_i32();
-        native_config.model_config.provider = Some(self.config.inference.provider.as_str().into());
+        native_config.model_config.num_threads = self.inference.threads_i32();
+        native_config.model_config.provider = Some(self.inference.provider.as_str().into());
         let recognizer = NativeRecognizer::create(&native_config)
             .ok_or_else(|| load_failed("SenseVoice", &files.root))?;
         let recognizer = Arc::new(recognizer);
@@ -175,8 +122,8 @@ impl OfflineRecognizer for SenseVoice {
 
     fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError> {
         let language = match &opts.language {
-            Some(code) => code.parse()?,
-            None => self.config.language,
+            Some(code) => language(code)?,
+            None => self.language,
         };
         let recognizer = self.recognizer(language)?;
         super::transcribe(&recognizer, &recognizer.create_stream(), samples)
@@ -186,7 +133,8 @@ impl OfflineRecognizer for SenseVoice {
 impl fmt::Debug for SenseVoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SenseVoice")
-            .field("config", &self.config)
+            .field("files", &self.files)
+            .field("language", &self.language)
             .finish_non_exhaustive()
     }
 }
@@ -197,10 +145,9 @@ mod tests {
 
     #[test]
     fn languages_parse() {
-        for (language, code) in SenseVoiceLanguage::ALL.iter().zip(SENSE_VOICE_LANGUAGES) {
-            assert_eq!(code.parse::<SenseVoiceLanguage>().unwrap(), *language);
-            assert_eq!(language.to_string(), code);
+        for code in SENSE_VOICE_LANGUAGES {
+            assert_eq!(language(code).unwrap(), code);
         }
-        assert!("fr".parse::<SenseVoiceLanguage>().is_err());
+        assert!(language("fr").is_err());
     }
 }

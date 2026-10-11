@@ -4,7 +4,7 @@ mod generic;
 mod sense_voice;
 
 pub(crate) use generic::{GenericOffline, OfflineConfig};
-pub(crate) use sense_voice::{SenseVoice, SenseVoiceConfig, SenseVoiceLanguage};
+pub(crate) use sense_voice::{SenseVoice, SenseVoiceConfig};
 
 /// Decodes `samples` on a fresh `stream` of `recognizer` and returns the
 /// text.

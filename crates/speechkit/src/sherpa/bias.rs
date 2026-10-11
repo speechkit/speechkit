@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::SpeechError;
+use crate::{SpeechError, sherpa::layout::token_strings};
 
 /// The longest phrase, in characters.
 pub(crate) const MAX_PHRASE_CHARS: usize = 64;
@@ -13,21 +13,11 @@ pub(crate) const MAX_PHRASE_CHARS: usize = 64;
 pub(crate) const MAX_PHRASES: usize = 256;
 /// The longest prompt, in characters, for Qwen3-ASR and FunASR-Nano.
 pub(crate) const MAX_PROMPT_CHARS: usize = 64;
-/// The default boost for bias phrases without their own score.
+/// The boost of every bias phrase.
 pub(crate) const DEFAULT_SCORE: f32 = 2.0;
 
 fn invalid(message: impl Into<String>) -> SpeechError {
     SpeechError::InvalidInput(message.into())
-}
-
-/// A phrase to favor, with an optional score overriding the default.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub(crate) struct BiasPhrase {
-    /// The phrase.
-    pub text: String,
-    /// Its boost, or `None` for the default.
-    pub score: Option<f32>,
 }
 
 /// How phrases are split into model tokens.
@@ -85,60 +75,6 @@ pub(crate) fn is_cjk(c: char) -> bool {
         | 0x31350..=0x323AF)
 }
 
-/// Decoding bias for transducer models.
-///
-/// Configuring it, even with no phrases, switches decoding to
-/// `modified_beam_search`, which costs roughly 2–4× greedy decoding, and
-/// lets sessions pass their own hints in
-/// [`AsrOptions::hints`](crate::asr::AsrOptions::hints).
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub(crate) struct TransducerBias {
-    /// Phrases for every session.
-    pub phrases: Vec<BiasPhrase>,
-    /// The boost for phrases without a score. Default: 2.0.
-    pub default_score: f32,
-}
-
-impl TransducerBias {
-    /// Checks the phrases and scores.
-    ///
-    /// # Errors
-    ///
-    /// [`SpeechError::InvalidInput`] for a bad phrase (see
-    /// [`check_transducer_phrase`]), a non-finite score, or more than 256
-    /// phrases.
-    pub(crate) fn validate(&self) -> Result<(), SpeechError> {
-        if !self.default_score.is_finite() {
-            return Err(invalid("the default bias score must be finite"));
-        }
-        check_count(self.phrases.len())?;
-        for phrase in &self.phrases {
-            check_transducer_phrase(&phrase.text)?;
-            if phrase.score.is_some_and(|score| !score.is_finite()) {
-                return Err(invalid(format!(
-                    "the score of {:?} must be finite",
-                    phrase.text
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// The phrases in sherpa-onnx's format: `a :3.5/b`.
-    pub(crate) fn render(&self) -> Option<String> {
-        let rendered: Vec<String> = self
-            .phrases
-            .iter()
-            .map(|phrase| match phrase.score {
-                Some(score) => format!("{} :{score}", phrase.text),
-                None => phrase.text.clone(),
-            })
-            .collect();
-        (!rendered.is_empty()).then(|| rendered.join("/"))
-    }
-}
-
 fn check_count(count: usize) -> Result<(), SpeechError> {
     if count > MAX_PHRASES {
         return Err(invalid(format!(
@@ -183,12 +119,12 @@ pub(crate) fn check_transducer_phrase(phrase: &str) -> Result<(), SpeechError> {
     Ok(())
 }
 
-/// Checks session hints for a transducer.
+/// Checks a transducer's bias phrases or a session's hints.
 ///
 /// # Errors
 ///
 /// As [`check_transducer_phrase`], or too many phrases.
-pub(crate) fn check_session_hints(hints: &[String]) -> Result<(), SpeechError> {
+pub(crate) fn check_transducer_phrases(hints: &[String]) -> Result<(), SpeechError> {
     check_count(hints.len())?;
     hints
         .iter()
@@ -231,11 +167,7 @@ impl Vocabulary {
         let known = if unit == ModelingUnit::Bpe {
             HashSet::new()
         } else {
-            tokens
-                .lines()
-                .filter_map(|line| line.split_whitespace().next())
-                .map(str::to_owned)
-                .collect()
+            token_strings(tokens).map(str::to_owned).collect()
         };
         Self {
             unit: Some(unit),
@@ -333,36 +265,8 @@ mod tests {
             assert_eq!(check_transducer_phrase(phrase).is_ok(), *ok, "{phrase:?}");
         }
         let many: Vec<String> = (0..257).map(|i| format!("p{i}")).collect();
-        assert!(check_session_hints(&many).is_err());
-        assert!(check_session_hints(&hints(&["ok"])).is_ok());
-    }
-
-    fn bias(phrases: &[(&str, Option<f32>)]) -> TransducerBias {
-        TransducerBias {
-            phrases: phrases
-                .iter()
-                .map(|&(text, score)| BiasPhrase {
-                    text: text.into(),
-                    score,
-                })
-                .collect(),
-            default_score: DEFAULT_SCORE,
-        }
-    }
-
-    #[test]
-    fn bias_validation_and_rendering() {
-        let named = bias(&[("语音识别", None), ("张三", Some(3.5))]);
-        named.validate().unwrap();
-        assert_eq!(named.render().as_deref(), Some("语音识别/张三 :3.5"));
-        assert_eq!(bias(&[]).render(), None);
-        let nan = TransducerBias {
-            default_score: f32::NAN,
-            ..bias(&[])
-        };
-        assert!(nan.validate().is_err());
-        assert!(bias(&[("a", Some(f32::INFINITY))]).validate().is_err());
-        assert!(bias(&[("a/b", None)]).validate().is_err());
+        assert!(check_transducer_phrases(&many).is_err());
+        assert!(check_transducer_phrases(&hints(&["ok"])).is_ok());
     }
 
     #[test]
