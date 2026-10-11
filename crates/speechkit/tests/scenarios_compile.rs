@@ -1,11 +1,11 @@
-//! The scenarios of the public API design, compiled and never run.
+//! The scenarios of `docs/guide.md`, compiled and never run.
 //!
 //! Each function below is a scenario written the way an application would
 //! write it, against the real API. If a call changes shape, this file stops
 //! compiling: the API and its documented usage cannot drift apart. Nothing
 //! here runs, so no device, model, key, or network is needed.
 //!
-//! The scenario code is as written in the design, except where an
+//! The scenario code is as written in the guide, except where an
 //! application object is borrowed here and owned there (`&engine` is
 //! `engine`). The types at the top are the application's own code, stubbed.
 #![cfg(all(
