@@ -104,55 +104,6 @@ pub(crate) enum Event {
     Other,
 }
 
-// Only the tests compare events.
-#[cfg(test)]
-impl PartialEq for Event {
-    /// Errors compare by code and message.
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Error { code: a, error: x }, Self::Error { code: b, error: y }) => {
-                a == b && x.to_string() == y.to_string()
-            }
-            (Self::SessionUpdated, Self::SessionUpdated) | (Self::Other, Self::Other) => true,
-            (Self::SpeechStarted { audio_start: a }, Self::SpeechStarted { audio_start: b }) => {
-                a == b
-            }
-            (
-                Self::SpeechStopped {
-                    item_id: a,
-                    audio_end: x,
-                },
-                Self::SpeechStopped {
-                    item_id: b,
-                    audio_end: y,
-                },
-            ) => a == b && x == y,
-            (Self::Committed { item_id: a }, Self::Committed { item_id: b }) => a == b,
-            (
-                Self::Delta {
-                    item_id: a,
-                    delta: x,
-                },
-                Self::Delta {
-                    item_id: b,
-                    delta: y,
-                },
-            )
-            | (
-                Self::Completed {
-                    item_id: a,
-                    transcript: x,
-                },
-                Self::Completed {
-                    item_id: b,
-                    transcript: y,
-                },
-            ) => a == b && x == y,
-            _ => false,
-        }
-    }
-}
-
 fn missing(what: &str) -> SpeechError {
     SpeechError::backend(BACKEND, false, format!("an event is missing {what}"))
 }
@@ -261,55 +212,46 @@ mod tests {
 
     #[test]
     fn decodes_events() {
-        let parse_str = |s: &str| parse(&serde_json::from_str(s).unwrap());
-        assert_eq!(
-            parse_str(r#"{"type":"session.updated"}"#).unwrap(),
+        let parse_str = |s: &str| parse(&serde_json::from_str(s).unwrap()).unwrap();
+        assert!(matches!(
+            parse_str(r#"{"type":"session.updated"}"#),
             Event::SessionUpdated
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse_str(
                 r#"{"type":"input_audio_buffer.committed","item_id":"a","previous_item_id":""}"#
-            )
-            .unwrap(),
-            Event::Committed {
-                item_id: "a".into()
-            }
-        );
-        assert_eq!(
-            parse_str(r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"a","delta":"hi"}"#).unwrap(),
-            Event::Delta { item_id: "a".into(), delta: "hi".into() }
-        );
-        assert_eq!(
-            parse_str(r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"a","transcript":"hi."}"#).unwrap(),
-            Event::Completed { item_id: "a".into(), transcript: "hi.".into() }
-        );
-        assert_eq!(
+            ),
+            Event::Committed { item_id } if item_id == "a"
+        ));
+        assert!(matches!(
+            parse_str(r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"a","delta":"hi"}"#),
+            Event::Delta { item_id, delta } if item_id == "a" && delta == "hi"
+        ));
+        assert!(matches!(
+            parse_str(r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"a","transcript":"hi."}"#),
+            Event::Completed { item_id, transcript } if item_id == "a" && transcript == "hi."
+        ));
+        assert!(matches!(
             parse_str(
                 r#"{"type":"input_audio_buffer.speech_stopped","item_id":"a","audio_end_ms":1250}"#
-            )
-            .unwrap(),
-            Event::SpeechStopped {
-                item_id: "a".into(),
-                audio_end: Duration::from_millis(1_250)
-            }
-        );
+            ),
+            Event::SpeechStopped { item_id, audio_end }
+                if item_id == "a" && audio_end == Duration::from_millis(1_250)
+        ));
+        let parse_raw = |s: &str| parse(&serde_json::from_str(s).unwrap());
         assert!(
-            parse_str(r#"{"type":"input_audio_buffer.speech_stopped","item_id":"a"}"#).is_err()
+            parse_raw(r#"{"type":"input_audio_buffer.speech_stopped","item_id":"a"}"#).is_err()
         );
-        assert_eq!(
+        assert!(matches!(
             parse_str(
                 r#"{"type":"input_audio_buffer.speech_started","item_id":"a","audio_start_ms":300}"#
-            )
-            .unwrap(),
-            Event::SpeechStarted {
-                audio_start: Duration::from_millis(300)
-            }
-        );
-        assert!(parse_str(r#"{"type":"input_audio_buffer.committed"}"#).is_err());
+            ),
+            Event::SpeechStarted { audio_start } if audio_start == Duration::from_millis(300)
+        ));
+        assert!(parse_raw(r#"{"type":"input_audio_buffer.committed"}"#).is_err());
         let Event::Error { code, error } = parse_str(
             r#"{"type":"error","error":{"code":"rate_limit_exceeded","message":"slow"}}"#,
-        )
-        .unwrap() else {
+        ) else {
             panic!("error event");
         };
         assert_eq!(code.as_deref(), Some("rate_limit_exceeded"));
@@ -317,13 +259,12 @@ mod tests {
         assert!(matches!(
             parse_str(
                 r#"{"type":"conversation.item.input_audio_transcription.failed","error":{}}"#
-            )
-            .unwrap(),
+            ),
             Event::Error { code: None, .. }
         ));
-        assert_eq!(
-            parse_str(r#"{"type":"rate_limits.updated"}"#).unwrap(),
+        assert!(matches!(
+            parse_str(r#"{"type":"rate_limits.updated"}"#),
             Event::Other
-        );
+        ));
     }
 }

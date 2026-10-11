@@ -113,7 +113,7 @@ pub fn a01_refused_chunk_returned(make: &dyn Fn() -> AsrEngine) {
         .try_push(too_large.clone())
         .expect_err("longer than the queue");
     assert_eq!(refused.kind, PushErrorKind::TooLarge);
-    assert_eq!(refused.into_chunk(), too_large);
+    assert_eq!(refused.chunk, too_large);
     for (bad, index) in [(f32::NAN, 3), (f32::INFINITY, 0), (1.5, 159)] {
         let mut chunk = tone(160);
         chunk[index] = bad;
@@ -126,7 +126,7 @@ pub fn a01_refused_chunk_returned(make: &dyn Fn() -> AsrEngine) {
     let late = tone(160);
     let refused = session.try_push(late.clone()).expect_err("closed");
     assert_eq!(refused.kind, PushErrorKind::Closed);
-    assert_eq!(refused.into_chunk(), late);
+    assert_eq!(refused.chunk, late);
     let transcript = session.finish(secs(30)).expect("the session succeeds");
     assert_eq!(transcript.duration, Duration::from_millis(100));
     wait_idle(&engine);

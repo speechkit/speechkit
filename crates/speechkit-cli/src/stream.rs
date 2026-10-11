@@ -53,7 +53,7 @@ pub(crate) fn stream(
                         // The queue is full: back off and push the same audio again.
                         PushErrorKind::Full if Instant::now() < deadline => {
                             retries += 1;
-                            pending = refused.into_chunk();
+                            pending = refused.chunk;
                             std::thread::sleep(RETRY);
                         }
                         PushErrorKind::Full => {

@@ -96,21 +96,6 @@ impl Resampler {
         })
     }
 
-    /// The input rate.
-    pub fn from_rate(&self) -> SampleRate {
-        self.from
-    }
-
-    /// The output rate.
-    pub fn to_rate(&self) -> SampleRate {
-        self.to
-    }
-
-    /// Whether the rates match, so audio passes through unchanged.
-    pub fn is_passthrough(&self) -> bool {
-        self.filter.is_none()
-    }
-
     /// Resamples `input`, appending finished output to `out`.
     ///
     /// # Errors
@@ -264,7 +249,7 @@ mod tests {
     fn passthrough_is_bit_exact() {
         let input = sine(SampleRate::HZ_16000, 1_600, 440.0);
         let mut resampler = Resampler::new(SampleRate::HZ_16000, SampleRate::HZ_16000).unwrap();
-        assert!(resampler.is_passthrough());
+        assert!(resampler.filter.is_none());
         let mut out = Vec::new();
         resampler.process(&input, &mut out).unwrap();
         resampler.flush(&mut out).unwrap();

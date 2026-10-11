@@ -214,7 +214,6 @@ impl AsrEngine {
             slots: inner.slots.clone(),
             endpoints: Endpoints::new(&options, origin),
         }));
-        let max_length = options.max_length;
         let worker = Worker {
             shared: shared.clone(),
             backend: inner.backend.clone(),
@@ -222,7 +221,6 @@ impl AsrEngine {
             from: sample_rate,
             to: caps.sample_rate,
             block: geometry.block,
-            max_length,
             slot,
         };
         std::thread::Builder::new()

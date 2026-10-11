@@ -100,12 +100,6 @@ pub(crate) struct RealtimeState {
     last_end: Duration,
 }
 
-impl Default for RealtimeState {
-    fn default() -> Self {
-        Self::new(Activity::None)
-    }
-}
-
 impl RealtimeState {
     /// A session that is connecting, reporting activity from `activity`.
     pub(crate) fn new(activity: Activity) -> Self {

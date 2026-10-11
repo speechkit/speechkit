@@ -44,11 +44,6 @@ impl PushError {
     fn new(kind: PushErrorKind, chunk: Vec<f32>) -> Self {
         Self { kind, chunk }
     }
-
-    /// The refused chunk.
-    pub fn into_chunk(self) -> Vec<f32> {
-        self.chunk
-    }
 }
 
 impl std::fmt::Debug for PushError {
@@ -176,13 +171,7 @@ mod tests {
         }
         let closed = PushError::new(PushErrorKind::Closed, vec![0.5]);
         assert_eq!(closed.to_string(), "session input is closed");
-        assert_eq!(closed.clone_chunk(), [0.5]);
+        assert_eq!(closed.chunk, [0.5]);
         assert!(matches!(SpeechError::from(closed), SpeechError::Closed));
-    }
-
-    impl PushError {
-        fn clone_chunk(&self) -> Vec<f32> {
-            self.chunk.clone()
-        }
     }
 }

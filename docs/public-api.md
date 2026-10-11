@@ -206,8 +206,8 @@ AsrSession                                    // Send + Sync; dropping it cancel
     result() -> Option<&AsrResult>
     sample_rate() / queued() -> Duration / id()
 
-PushError { kind: PushErrorKind, chunk: Vec<f32> }   // every refusal hands the chunk back
-    into_chunk() -> Vec<f32>                  // `?` turns it into a SpeechError
+PushError { kind: PushErrorKind, chunk: Vec<f32> }   // every refusal hands the chunk back;
+                                              // `?` turns it into a SpeechError
 PushErrorKind                                 // non_exhaustive
     Full                                      // no room before the deadline
     TooLarge                                  // longer than the input queue

@@ -25,8 +25,6 @@ pub(crate) struct Worker {
     pub(crate) to: SampleRate,
     /// Frames fed to the backend at a time, at its rate.
     pub(crate) block: usize,
-    /// The session ends after this much audio.
-    pub(crate) max_length: Option<Duration>,
     /// A slot the caller already took, or `None` to wait for one.
     pub(crate) slot: Option<SlotGuard>,
 }
@@ -41,7 +39,6 @@ impl Worker {
             from,
             to,
             block,
-            max_length,
             slot,
         } = self;
         let ended = || shared.terminal.get().is_some();
@@ -95,7 +92,6 @@ impl Worker {
             }
         }
         shared.changed.notify_all();
-        let rate = resampler.to_rate();
         Running {
             shared,
             backend: name,
@@ -104,8 +100,8 @@ impl Worker {
             block,
             pending: Vec::new(),
             fed: 0,
-            rate,
-            max_length,
+            rate: to,
+            max_length: options.max_length,
             slot,
         }
         .run();

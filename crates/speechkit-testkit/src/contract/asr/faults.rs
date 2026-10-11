@@ -52,7 +52,7 @@ pub fn a02_backpressure_full() {
     let chunk = tone(1_600);
     let refused = session.try_push(chunk.clone()).expect_err("full");
     assert_eq!(refused.kind, PushErrorKind::Full);
-    assert_eq!(refused.into_chunk(), chunk);
+    assert_eq!(refused.chunk, chunk);
     // A-17: an empty chunk is fine even now.
     session.try_push(Vec::new()).expect("empty push");
     let begun = Instant::now();

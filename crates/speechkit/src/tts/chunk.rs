@@ -69,11 +69,6 @@ impl Chunker {
         self.drain(true)
     }
 
-    /// Bytes of input already returned in chunks.
-    pub fn consumed(&self) -> usize {
-        self.offset
-    }
-
     fn drain(&mut self, last: bool) -> Vec<TextChunk> {
         let mut out = Vec::new();
         loop {
@@ -327,7 +322,7 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "Hello world. ");
         assert_eq!(chunks[0].range, 0..13);
-        assert_eq!(chunker.consumed(), 13);
+        assert_eq!(chunker.offset, 13);
         assert_eq!(chunker.push("你好。")[0].text, "Next你好。");
         let rest = chunker.flush();
         assert!(rest.is_empty());

@@ -49,12 +49,6 @@ pub(crate) struct DashScopeState {
     known: Duration,
 }
 
-impl Default for DashScopeState {
-    fn default() -> Self {
-        Self::new(Duration::from_secs(1))
-    }
-}
-
 fn millis(value: f64) -> Duration {
     Duration::try_from_secs_f64(value / 1_000.0).unwrap_or_default()
 }
@@ -228,7 +222,7 @@ mod tests {
 
     #[test]
     fn partials_segments_and_dedup() {
-        let mut state = DashScopeState::default();
+        let mut state = DashScopeState::new(Duration::from_secs(1));
         state.on_event(Event::Started).unwrap();
         assert_eq!(state.phase(), Phase::Running);
         let mut on = |event| text(state.on_event(event).unwrap());
@@ -251,7 +245,7 @@ mod tests {
     #[test]
     fn sentences_are_the_speech() {
         let ms = Duration::from_millis;
-        let mut state = DashScopeState::new(ms(1_000));
+        let mut state = DashScopeState::new(Duration::from_secs(1));
         state.on_event(Event::Started).unwrap();
         // 1.5 s sent and nothing heard: known to 0.5 s.
         assert_eq!(
@@ -296,12 +290,16 @@ mod tests {
 
     #[test]
     fn finishing() {
-        let mut state = DashScopeState::default();
+        let mut state = DashScopeState::new(Duration::from_secs(1));
         assert!(state.on_event(Event::Finished).is_err());
         state.finishing();
         state.on_event(Event::Finished).unwrap();
         assert_eq!(state.phase(), Phase::Finished);
         let failed = Event::Failed(SpeechError::backend("x", false, "no"));
-        assert!(DashScopeState::default().on_event(failed).is_err());
+        assert!(
+            DashScopeState::new(Duration::from_secs(1))
+                .on_event(failed)
+                .is_err()
+        );
     }
 }

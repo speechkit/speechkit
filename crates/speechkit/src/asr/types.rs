@@ -107,15 +107,6 @@ impl Turn {
     }
 }
 
-/// Committed segments plus the pending text of unfinished utterances.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct View {
-    /// Committed segments, in input order.
-    committed: Vec<Segment>,
-    /// Pending text by utterance.
-    partials: BTreeMap<UtteranceId, String>,
-}
-
 /// The text of a session as it is recognized: its committed segments
 /// followed by the pending text of unfinished utterances, for showing words
 /// as they arrive.
@@ -146,7 +137,10 @@ struct View {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct LiveTranscript {
-    view: View,
+    /// Committed segments, in input order.
+    committed: Vec<Segment>,
+    /// Pending text by utterance.
+    partials: BTreeMap<UtteranceId, String>,
 }
 
 impl LiveTranscript {
@@ -158,17 +152,16 @@ impl LiveTranscript {
     /// Applies an update: a `Partial` sets its utterance's pending text, a
     /// `Segment` commits it, and `Closed` drops what is still pending.
     pub fn apply(&mut self, update: &AsrUpdate) {
-        let view = &mut self.view;
         match update {
             AsrUpdate::Partial(partial) => {
-                view.partials
+                self.partials
                     .insert(partial.utterance, partial.text.clone());
             }
             AsrUpdate::Segment(segment) => {
-                view.partials.remove(&segment.utterance);
-                view.committed.push(segment.clone());
+                self.partials.remove(&segment.utterance);
+                self.committed.push(segment.clone());
             }
-            AsrUpdate::Closed(_) => view.partials.clear(),
+            AsrUpdate::Closed(_) => self.partials.clear(),
             AsrUpdate::SpeechStarted { .. }
             | AsrUpdate::SpeechEnded { .. }
             | AsrUpdate::TurnEnded(_) => {}
@@ -178,8 +171,8 @@ impl LiveTranscript {
     /// The committed text followed by the pending text, joined as
     /// [`Transcript::text`] joins segments.
     pub fn text(&self) -> String {
-        let committed = self.view.committed.iter().map(|s| s.text.as_str());
-        let pending = self.view.partials.values().map(String::as_str);
+        let committed = self.committed.iter().map(|s| s.text.as_str());
+        let pending = self.partials.values().map(String::as_str);
         join_texts(committed.chain(pending))
     }
 }
