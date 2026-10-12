@@ -406,8 +406,9 @@ async fn upload_admission_is_bounded_and_released_on_disconnect() {
 async fn websocket_open_runs_outside_tokio_tasks() {
     use speechkit::Secret;
     use speechkit::cloud::{CloudRuntime, OpenAiRealtime, OpenAiRealtimeConfig};
-    // A real handshake gets 503. A nested-runtime panic would instead
-    // produce 500 without reaching this local peer.
+    // A real handshake gets 503, a retryable backend failure the server
+    // answers with 502; its detail is logged, not sent. A nested-runtime
+    // panic would instead produce 500 without reaching this local peer.
     let peer = Router::new().route(
         "/",
         axum::routing::get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
@@ -434,7 +435,7 @@ async fn websocket_open_runs_outside_tokio_tasks() {
         let engine = AsrEngine::new(backend);
         let (status, body) = send(&app(engine), post(multipart(&wav(1), &[]))).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
-        assert!(body.contains("handshake returned HTTP 503"), "{body}");
+        assert!(!body.contains("HTTP 503"), "{body}");
     }
     server.abort();
 }
