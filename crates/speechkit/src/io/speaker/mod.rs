@@ -11,7 +11,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering, fence},
     },
     thread::JoinHandle,
@@ -559,6 +559,9 @@ impl Speaker {
 impl Drop for Speaker {
     fn drop(&mut self) {
         self.shared.closing.store(true, Ordering::Release);
+        // Taking the lock orders the store before a player that checked
+        // `closing` under it goes to sleep, so the wakeup is not lost.
+        drop(lock(&self.shared.queue));
         self.shared.changed.notify_all();
         if let Some(player) = self.player.take() {
             let _ = player.join();
@@ -881,10 +884,8 @@ impl Player {
                 return;
             }
             if self.shared.device_lost() {
-                tracing::warn!("the speaker stopped; its playbacks fail");
-                self.fail_all(&lost_error());
-                self.wait();
-                continue;
+                self.after_loss();
+                return;
             }
             self.service();
             if self.current.is_none() {
@@ -893,6 +894,35 @@ impl Player {
             let progressed = self.current.is_some() && self.feed();
             if !progressed {
                 self.wait();
+            }
+        }
+    }
+
+    /// Fails every playback once the device is lost, and then each one
+    /// queued later, until the speaker is dropped. The device does not come
+    /// back, so the player sleeps until `play` or the drop wakes it.
+    fn after_loss(&mut self) {
+        tracing::warn!("the speaker stopped; its playbacks fail");
+        let error = lost_error();
+        loop {
+            self.fail_all(&error);
+            let mut queue = lock(&self.shared.queue);
+            loop {
+                #[cfg(test)]
+                self.shared.loops.fetch_add(1, Ordering::Relaxed);
+                if self.shared.closing.load(Ordering::Acquire) {
+                    return;
+                }
+                // Nothing plays any more, so a stop has nothing to do.
+                queue.stop_all = false;
+                if !queue.waiting.is_empty() {
+                    break;
+                }
+                queue = self
+                    .shared
+                    .changed
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
         }
     }
