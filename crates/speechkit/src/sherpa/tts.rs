@@ -241,14 +241,16 @@ impl TtsStream for Stream {
         if self.cancelled || chunk.trim().is_empty() {
             return Ok(());
         }
-        if chunk.contains('\0') {
-            return Err(SpeechError::InvalidInput(
-                "text contains a NUL character".into(),
-            ));
-        }
+        // The C API ends text at a NUL, and a NUL says nothing, so it is
+        // read as a space rather than failing the synthesis midway.
+        let chunk = if chunk.contains('\0') {
+            std::borrow::Cow::Owned(chunk.replace('\0', " "))
+        } else {
+            std::borrow::Cow::Borrowed(chunk)
+        };
         let audio = self
             .tts
-            .generate_with_config::<NoProgress>(chunk, &self.generation, None)
+            .generate_with_config::<NoProgress>(&chunk, &self.generation, None)
             .ok_or_else(|| SpeechError::backend("sherpa-onnx", false, "synthesis failed"))?;
         let samples = audio.samples();
         if !samples.is_empty() {
