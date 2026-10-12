@@ -4,15 +4,19 @@
 use std::time::Duration;
 
 use speechkit::{
-    SampleRate,
+    SampleRate, SpeechError,
     asr::{AsrEngine, AsrOptions, AsrUpdate},
-    io::{Capture, CaptureOptions, FakeMicrophone, ListenOptions, Microphone},
+    io::{
+        Capture, CaptureOptions, FakeMicrophone, ListenOptions, Microphone, Wake, WakeUpdate,
+        Watching,
+    },
 };
 use speechkit_testkit::{
     Gate,
     asr::{FakeAsr, Script, Step, Trigger},
     contract::devices::ramp,
     eventually,
+    wake::FakeWakeWord,
 };
 
 const RATE: SampleRate = SampleRate::HZ_16000;
@@ -236,4 +240,51 @@ fn a_recording_holds_every_frame_up_to_the_end_at_any_rate() {
     let recording = listening.recording().expect("a recording");
     assert_eq!(recording.audio.samples.len(), 4_411);
     assert_eq!(recording.audio.samples, ramp(0, 4_411));
+}
+
+/// The next keyword `watching` hears.
+fn heard(watching: &mut Watching) -> Wake {
+    match watching.recv(SETTLE).expect("an update") {
+        WakeUpdate::Heard(wake) => Some(wake),
+        _ => None,
+    }
+    .expect("a keyword")
+}
+
+#[test]
+fn a_listening_from_a_keyword_takes_listen_options() {
+    let (capture, mic) = capture();
+    let mut watching = capture.watch(&FakeWakeWord::new()).expect("watch");
+    let engine = AsrEngine::new(FakeAsr::new(Script::new()));
+    let keyword = |from: usize| {
+        let mut samples = ramp(from, ms(400));
+        samples.push(FakeWakeWord::MARK);
+        samples
+    };
+
+    // A start of its own is refused: the listening starts at the keyword.
+    mic.push(&keyword(0));
+    mic.push(&ramp(0, ms(400)));
+    let error = heard(&mut watching)
+        .listen_with(
+            &engine,
+            AsrOptions::default(),
+            ListenOptions::starting_at(Duration::ZERO),
+        )
+        .expect_err("a start of its own");
+    assert!(matches!(error, SpeechError::InvalidInput(_)), "{error:?}");
+
+    mic.push(&keyword(0));
+    mic.push(&ramp(0, ms(400)));
+    let listening = heard(&mut watching)
+        .listen_with(
+            &engine,
+            AsrOptions::default(),
+            ListenOptions::default().with_recording(Duration::from_secs(5)),
+        )
+        .expect("listen after the keyword");
+    let recording = listening.recording().expect("it records");
+    assert!(!recording.truncated);
+    listening.finish(SETTLE).expect("the listening finishes");
+    watching.stop();
 }
