@@ -470,10 +470,11 @@ fn seconds(value: f32, limit: Duration) -> Duration {
 }
 
 impl Detector {
-    /// Decodes what is ready. A detection needs no reset: sherpa-onnx
-    /// starts looking for the next keyword on its own, and token times
-    /// stay measured from the start of the stream (a reset would restart
-    /// them).
+    /// Decodes what is ready. A detection needs no reset: sherpa-onnx's
+    /// decoder goes back to its start state after a match, and its
+    /// `GetResult` drops a result whose times overlap the last one
+    /// returned, so a keyword is reported once. Token times stay measured
+    /// from the start of the stream; a reset would restart them.
     fn decode(&self) -> Vec<WakeEvent> {
         let mut out = Vec::new();
         let heard = SampleRate::HZ_16000.duration_of(self.fed);
