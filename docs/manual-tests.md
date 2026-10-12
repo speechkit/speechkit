@@ -10,14 +10,14 @@ Prepare a model, for example streaming Zipformer:
 speechkit mic --backend sherpa-streaming --model sherpa-onnx-streaming-zipformer-en-2023-06-26
 ```
 
-1. The command prints "listening; press Enter to stop".
+1. The command prints "listening; press Enter or Ctrl+C to stop".
 2. Speaking shows partial results rewriting one line on the terminal.
 3. Pausing commits a segment, printed on its own line with timestamps.
-4. Pressing Enter stops capture; the transcript is printed to stdout and the command exits with code 0.
+4. Pressing Enter stops capture; the transcript is printed to stdout and the command exits with code 0. Ctrl+C does the same, and a second Ctrl+C exits at once.
 5. Redirecting stdout (`speechkit mic ... > out.txt`) leaves only the transcript in the file.
 6. A 44.1 kHz or 48 kHz default device works (the session resamples).
 7. A stereo device works (channels are averaged).
-8. Unplugging a USB microphone mid-session logs a warning that the microphone stopped, ends the session, and prints the transcript so far.
+8. Unplugging a USB microphone mid-session logs a warning that the microphone stopped, ends the session, and prints the transcript so far, without waiting for Enter.
 9. With no input device, the command fails with exit code 4 and "no input device".
 10. On macOS, denying microphone permission fails cleanly instead of hanging.
 11. `speechkit devices` lists the input devices and marks the default one.
