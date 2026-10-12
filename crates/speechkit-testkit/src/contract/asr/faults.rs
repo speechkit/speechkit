@@ -359,8 +359,8 @@ pub fn a03_late_events_discarded() {
     assert!(failure.confirmed.segments.is_empty());
 }
 
-/// A-11: the history is bounded; reaching the bound fails with `Capacity`
-/// and keeps what fit.
+/// A-11: the history is bounded, partial results not yet committed
+/// included; reaching the bound fails with `Capacity` and keeps what fit.
 pub fn a11_bounded() {
     let fake = FakeAsr::new(
         Script::new()
@@ -368,8 +368,25 @@ pub fn a11_bounded() {
             .then(Trigger::AfterSamples(1_601), Step::Segment(1, "67890")),
     );
     let limits = AsrLimits::default().with_max_history_bytes(100);
-    let engine = engine(fake, limits);
-    let session = engine
+    let session = engine(fake, limits)
+        .start(RATE, options(), Duration::from_secs(10))
+        .expect("start");
+    session.push(tone(1_600), secs(10)).expect("push");
+    let _ = session.push(tone(1_600), secs(10));
+    let failure = session.finish(secs(10)).expect_err("over the limit");
+    assert!(matches!(failure.error, SpeechError::Capacity));
+    assert_eq!(failure.confirmed.text(), "12345");
+
+    // Partials of utterances that never commit count while they are held:
+    // the segment and one partial fit in 150 bytes, a second does not.
+    let pending = FakeAsr::new(
+        Script::new()
+            .then(Trigger::AfterSamples(1), Step::Segment(0, "12345"))
+            .then(Trigger::AfterSamples(1), Step::Partial(1, "pending"))
+            .then(Trigger::AfterSamples(1_601), Step::Partial(2, "pending")),
+    );
+    let small = engine(pending, AsrLimits::default().with_max_history_bytes(150));
+    let session = small
         .start(RATE, options(), Duration::from_secs(10))
         .expect("start");
     session.push(tone(1_600), secs(10)).expect("push");

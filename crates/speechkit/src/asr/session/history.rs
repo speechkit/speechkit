@@ -20,6 +20,11 @@ use crate::{
 /// still count against `max_history_bytes`.
 const ENTRY_COST: usize = 64;
 
+/// What a pending partial with `text` counts against `max_history_bytes`.
+fn partial_cost(text: &str) -> usize {
+    ENTRY_COST + text.len()
+}
+
 /// One logged item.
 #[derive(Debug, Clone)]
 enum Item {
@@ -48,8 +53,10 @@ pub(crate) struct History {
     log: Vec<Entry>,
     /// The latest partial of each unfinished utterance, with its number.
     partials: BTreeMap<UtteranceId, (u64, String)>,
-    /// Bytes counted against `max_history_bytes`.
+    /// Bytes of the log counted against `max_history_bytes`.
     bytes: usize,
+    /// Bytes of the pending partials, which count too while they are held.
+    pending: usize,
     /// Where the next turn's segments start in the log.
     turn_from: usize,
 }
@@ -64,19 +71,24 @@ impl History {
     pub(crate) fn apply(&mut self, event: AsrEvent, max_bytes: usize) -> Result<(), SpeechError> {
         let item = match event {
             AsrEvent::Partial(Partial { utterance, text }) => {
-                if self
-                    .partials
-                    .get(&utterance)
-                    .is_some_and(|(_, old)| *old == text)
-                {
-                    return Ok(());
+                let old = match self.partials.get(&utterance) {
+                    Some((_, old)) if *old == text => return Ok(()),
+                    Some((_, old)) => partial_cost(old),
+                    None => 0,
+                };
+                let pending = self.pending - old + partial_cost(&text);
+                if self.bytes + pending > max_bytes {
+                    return Err(SpeechError::Capacity);
                 }
+                self.pending = pending;
                 self.seq += 1;
                 self.partials.insert(utterance, (self.seq, text));
                 return Ok(());
             }
             AsrEvent::Segment(segment) => {
-                self.partials.remove(&segment.utterance);
+                if let Some((_, old)) = self.partials.remove(&segment.utterance) {
+                    self.pending -= partial_cost(&old);
+                }
                 // An utterance with no words ends its speech but reaches
                 // neither readers nor the transcript.
                 if segment.text.trim().is_empty() {
@@ -97,7 +109,7 @@ impl History {
                 Item::Segment(segment) => segment.text.len(),
                 Item::SpeechStarted(_) | Item::SpeechEnded(..) | Item::TurnEnded { .. } => 0,
             };
-        if self.bytes + cost > max_bytes {
+        if self.bytes + self.pending + cost > max_bytes {
             return Err(SpeechError::Capacity);
         }
         self.bytes += cost;
@@ -157,6 +169,7 @@ impl History {
     /// Drops the pending text, which a session that has ended abandons.
     pub(crate) fn abandon_partials(&mut self) {
         self.partials.clear();
+        self.pending = 0;
     }
 
     /// A cursor for a reader that starts now.
