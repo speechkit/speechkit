@@ -365,19 +365,12 @@ impl RealtimeState {
             Event::Completed {
                 item_id,
                 transcript,
-            } => {
-                if self.completed.insert(item_id.clone()) {
-                    self.open.remove(&item_id);
-                    self.texts.remove(&item_id);
-                    match self.items.get(&item_id) {
-                        Some(&index) => {
-                            self.ready.insert(index, transcript);
-                        }
-                        None => {
-                            self.early.insert(item_id, transcript);
-                        }
-                    }
-                }
+            } => self.complete(item_id, transcript),
+            Event::ItemFailed { item_id, error } => {
+                // Its words are lost, but the utterances after it are not:
+                // it ends as an empty segment, in its turn.
+                tracing::warn!(%error, "an utterance could not be transcribed; it is left empty");
+                self.complete(item_id, String::new());
             }
             Event::Error { code, error } => {
                 if self.phase == Phase::Committing && code.as_deref() == Some(COMMIT_EMPTY) {
@@ -391,6 +384,22 @@ impl RealtimeState {
         self.release(&mut out);
         self.report_activity(&mut out);
         Ok(out)
+    }
+
+    /// Records `item_id`'s final transcript, unless it already has one.
+    fn complete(&mut self, item_id: String, transcript: String) {
+        if self.completed.insert(item_id.clone()) {
+            self.open.remove(&item_id);
+            self.texts.remove(&item_id);
+            match self.items.get(&item_id) {
+                Some(&index) => {
+                    self.ready.insert(index, transcript);
+                }
+                None => {
+                    self.early.insert(item_id, transcript);
+                }
+            }
+        }
     }
 
     fn partial(index: u64, text: String) -> AsrEvent {
@@ -499,6 +508,29 @@ mod tests {
             texts(&state.on_event(completed("c", "end")).unwrap()),
             ["s2:end"]
         );
+        assert!(state.settled());
+    }
+
+    #[test]
+    fn a_failed_item_is_an_empty_segment_in_its_turn() {
+        let mut state = RealtimeState::new(Activity::None);
+        state.on_event(Event::SessionUpdated).unwrap();
+        state.sent(24_000);
+        for id in ["a", "b", "c"] {
+            state.on_event(committed(id)).unwrap();
+        }
+        state.on_event(delta("b", "par")).unwrap();
+        assert!(state.on_event(completed("c", "three")).unwrap().is_empty());
+        let failed = Event::ItemFailed {
+            item_id: "b".into(),
+            error: SpeechError::backend("openai-realtime", false, "x"),
+        };
+        assert!(state.on_event(failed).unwrap().is_empty());
+        assert_eq!(
+            texts(&state.on_event(completed("a", "one")).unwrap()),
+            ["s0:one", "s1:", "s2:three"]
+        );
+        state.committing(false, true);
         assert!(state.settled());
     }
 

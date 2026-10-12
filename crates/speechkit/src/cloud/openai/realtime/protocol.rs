@@ -93,6 +93,14 @@ pub(crate) enum Event {
         /// The text.
         transcript: String,
     },
+    /// The transcription of one item failed. The rest of the session
+    /// goes on.
+    ItemFailed {
+        /// The item.
+        item_id: String,
+        /// The error, for the log.
+        error: SpeechError,
+    },
     /// A server error with its code, if any.
     Error {
         /// The error code.
@@ -151,15 +159,24 @@ pub(crate) fn parse(value: &Value) -> Result<Event, SpeechError> {
         },
         Some("conversation.item.input_audio_transcription.failed") => {
             let error = &value["error"];
-            Event::Error {
-                code: error["code"].as_str().map(str::to_owned),
-                error: server_error(
-                    BACKEND,
-                    "transcription failed",
-                    &error["code"],
-                    &error["message"],
-                    false,
-                ),
+            let failure = server_error(
+                BACKEND,
+                "transcription failed",
+                &error["code"],
+                &error["message"],
+                false,
+            );
+            // Without the item, nothing says which utterance failed, so
+            // the session fails.
+            match value["item_id"].as_str() {
+                Some(item_id) => Event::ItemFailed {
+                    item_id: item_id.to_owned(),
+                    error: failure,
+                },
+                None => Event::Error {
+                    code: error["code"].as_str().map(str::to_owned),
+                    error: failure,
+                },
             }
         }
         Some("error") => {
@@ -261,6 +278,12 @@ mod tests {
                 r#"{"type":"conversation.item.input_audio_transcription.failed","error":{}}"#
             ),
             Event::Error { code: None, .. }
+        ));
+        assert!(matches!(
+            parse_str(
+                r#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"i1","error":{"message":"bad audio"}}"#
+            ),
+            Event::ItemFailed { item_id, .. } if item_id == "i1"
         ));
         assert!(matches!(
             parse_str(r#"{"type":"rate_limits.updated"}"#),

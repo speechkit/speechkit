@@ -173,7 +173,8 @@ impl std::fmt::Debug for OpenAiRealtimeConfig {
 /// Each speechkit session opens its own WebSocket, whose messages a task
 /// on the runtime handles as they arrive. Audio streams as 24 kHz PCM16;
 /// deltas arrive as partial results and transcripts as segments, in commit
-/// order.
+/// order. An utterance the server fails to transcribe ends as an empty
+/// segment, with a warning logged, and the session goes on.
 ///
 /// Speech activity comes from server VAD (`speech_started` and
 /// `speech_stopped`), or from the application's VAD with
