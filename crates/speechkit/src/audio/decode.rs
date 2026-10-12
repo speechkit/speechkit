@@ -62,7 +62,7 @@ fn open(source: MediaSourceStream<'static>) -> Result<Track, SpeechError> {
     let decoder = symphonia::default::get_codecs()
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(|e| {
-            invalid(format_args!(
+            SpeechError::Unsupported(format!(
                 "unsupported codec ({e}). Opus is not supported; transcode to WAV, FLAC, or MP3 \
                  first, for example `ffmpeg -i input.webm output.wav`. Supported formats: \
                  {SUPPORTED_FORMATS}"

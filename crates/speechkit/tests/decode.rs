@@ -107,8 +107,12 @@ fn zero_sample_stream_errors() {
 
 #[test]
 fn opus_webm_rejected() {
-    let Some(message) = error("tone.webm") else {
+    let Some(path) = fixture("tone.webm") else {
         return;
+    };
+    let message = match audio::read(&path, DecodeLimits::default()) {
+        Err(SpeechError::Unsupported(message)) => message,
+        other => panic!("expected Unsupported, got {other:?}"),
     };
     assert!(message.contains("Opus"), "{message}");
     assert!(message.contains("transcode"), "{message}");
