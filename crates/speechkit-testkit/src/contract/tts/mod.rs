@@ -192,8 +192,8 @@ pub fn t03_marks(make: &dyn Fn() -> TtsEngine) {
     wait_idle(&engine);
 }
 
-/// T-04: bad options, an unknown voice, empty text, and text over the
-/// limit are rejected before synthesis starts.
+/// T-04: bad options, an unknown voice, invalid limits, empty text, and
+/// text over the limit are rejected before synthesis starts.
 pub fn t04_validation(make: &dyn Fn() -> TtsEngine) {
     let engine = make();
     let empty = engine
@@ -219,6 +219,18 @@ pub fn t04_validation(make: &dyn Fn() -> TtsEngine) {
             )
             .is_err()
     );
+    for limits in [
+        TtsLimits::default().with_output_queue(Duration::ZERO),
+        TtsLimits::default().with_max_text_chars(0),
+        TtsLimits::default().with_chunk_chars(0),
+    ] {
+        assert!(matches!(
+            make()
+                .with_limits(limits)
+                .start(TtsOptions::default(), Duration::from_secs(10)),
+            Err(SpeechError::InvalidInput(_))
+        ));
+    }
     let (session, output) = start(&engine, TtsOptions::default());
     let limit = engine.limits().max_text_chars;
     assert!(matches!(
