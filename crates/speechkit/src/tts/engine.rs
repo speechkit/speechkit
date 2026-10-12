@@ -11,7 +11,7 @@ use std::{
 use super::{
     Chunker, TtsBackend, TtsCapabilities, TtsFailure, TtsLimits, TtsOptions, TtsOutput, TtsSession,
     TtsUpdate, Voice,
-    session::{Shared, Worker, capacity, halves},
+    session::{Shared, Worker, halves},
     validate,
 };
 use crate::{
@@ -120,8 +120,9 @@ impl TtsEngine {
     ///
     /// # Errors
     ///
-    /// - [`SpeechError::InvalidInput`] for an unknown voice, or a speed
-    ///   that is not positive or outside the backend's range;
+    /// - [`SpeechError::InvalidInput`] for an unknown voice, a speed that
+    ///   is not positive or outside the backend's range, or limits with an
+    ///   output queue under one frame or a zero text or chunk length;
     /// - [`SpeechError::Unsupported`] for a speed other than 1.0 on a
     ///   backend without speed control, or a language no voice speaks;
     /// - [`SpeechError::Capacity`] if the deadline passes while every slot
@@ -151,6 +152,7 @@ impl TtsEngine {
         let caps = backend.capabilities();
         validate(&opts, caps, backend.voices())?;
         let rate = opts.sample_rate.unwrap_or(caps.sample_rate);
+        let capacity = inner.limits.check(rate)?;
         // Nothing costly happens before the deadline and the slot are dealt
         // with: the session's thread builds the resampler once it has a slot.
         let slot = opening.take(&inner.slots, deadline)?;
@@ -158,7 +160,7 @@ impl TtsEngine {
         let shared = Arc::new(Shared::new(
             id,
             rate,
-            capacity(rate, inner.limits.output_queue),
+            capacity,
             inner.limits.max_text_chars,
             inner.slots.clone(),
         ));

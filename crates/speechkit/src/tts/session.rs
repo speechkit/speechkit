@@ -715,10 +715,6 @@ fn queue(shared: &Shared, audio: &[f32]) -> Flow {
     Flow::Continue
 }
 
-pub(crate) fn capacity(rate: SampleRate, queue: Duration) -> usize {
-    usize::try_from(rate.frames_in(queue)).unwrap_or(usize::MAX)
-}
-
 #[cfg(test)]
 #[cfg(not(speechkit_loom))]
 mod tests {
@@ -749,7 +745,7 @@ mod tests {
     fn a_failed_resample_fails_the_synthesis() {
         let rate = SampleRate::HZ_16000;
         let slots = SlotLimiter::new(NonZeroUsize::MIN);
-        let queue = capacity(rate, Duration::from_secs(2));
+        let queue = crate::tts::TtsLimits::default().check(rate).unwrap();
         let shared = Arc::new(Shared::new(1, rate, queue, 1_000, slots.clone()));
         let (session, _output) = halves(&shared);
         session.push_text("hello").unwrap();

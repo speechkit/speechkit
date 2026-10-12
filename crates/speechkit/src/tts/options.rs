@@ -190,6 +190,23 @@ impl TtsLimits {
         self.chunk_chars = value;
         self
     }
+
+    /// Checks the limits for a session at `rate`, and returns the output
+    /// queue's capacity in samples.
+    pub(crate) fn check(&self, rate: SampleRate) -> Result<usize, SpeechError> {
+        let invalid = |message: &str| Err(SpeechError::InvalidInput(message.into()));
+        let capacity = rate.frames_in(self.output_queue);
+        if capacity == 0 {
+            return invalid("output_queue must cover at least one frame");
+        }
+        if self.max_text_chars == 0 {
+            return invalid("max_text_chars must be positive");
+        }
+        if self.chunk_chars == 0 {
+            return invalid("chunk_chars must be positive");
+        }
+        Ok(usize::try_from(capacity).unwrap_or(usize::MAX))
+    }
 }
 
 #[cfg(test)]
