@@ -105,6 +105,19 @@ impl AsrEvents {
         Flow::Continue
     }
 
+    /// Whether the session has ended or is failing, so the stream's work
+    /// is no longer wanted. Always `false` for forwarded events.
+    #[cfg_attr(
+        not(feature = "sherpa"),
+        expect(dead_code, reason = "only the worker pool asks")
+    )]
+    pub(crate) fn is_stopping(&self) -> bool {
+        match &self.target {
+            Target::Session(shared) => shared.stopping(&shared.lock()),
+            Target::Forward { .. } => false,
+        }
+    }
+
     /// Reports that the stream broke between calls, such as a dropped
     /// connection. The session fails with `error` at once, keeping what it
     /// confirmed; its stream is cancelled and dropped.

@@ -39,7 +39,10 @@ const MARKER: &str = "SPEECHKIT_FAKE_WORKER_MARKER";
 /// - `abort`: abort the worker at 3 200 samples, unless the marker file
 ///   exists; it creates the marker first, so only one worker aborts;
 /// - `late`: send a segment from a thread, 100 ms after opening;
-/// - `fail`: report a failure from a thread, 100 ms after opening.
+/// - `fail`: report a failure from a thread, 100 ms after opening;
+/// - `hang`: never return from `accept`;
+/// - `exit`: exit the worker 100 ms after the stream is closed, while it
+///   is idle in the pool.
 ///
 /// Every stream commits a segment naming its worker's process ID at the
 /// end.
@@ -52,6 +55,8 @@ struct Stream {
     events: AsrEvents,
     marker: PathBuf,
     abort: bool,
+    hang: bool,
+    exit: bool,
     seen: usize,
     thread: Option<JoinHandle<()>>,
 }
@@ -93,6 +98,8 @@ impl AsrBackend for Scripted {
             events,
             marker: self.marker.clone(),
             abort: has("abort"),
+            hang: has("hang"),
+            exit: has("exit"),
             seen: 0,
             thread,
         }))
@@ -102,6 +109,11 @@ impl AsrBackend for Scripted {
 impl AsrStream for Stream {
     fn accept(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
         self.seen += samples.len();
+        if self.hang {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
         if self.abort && self.seen >= 3_200 && !self.marker.exists() {
             std::fs::write(&self.marker, "crashed once").unwrap();
             std::process::abort();
@@ -129,6 +141,12 @@ impl Drop for Stream {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        if self.exit {
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                std::process::exit(0);
+            });
+        }
     }
 }
 
@@ -155,6 +173,11 @@ fn worker_entry() {
 /// A new worker is a new process of this test binary, which can take a
 /// while to start when every test runs at once, so starts get 60 s.
 fn engine() -> (AsrEngine, tempfile::TempDir) {
+    let (backend, dir) = backend();
+    (AsrEngine::new(backend), dir)
+}
+
+fn backend() -> (IsolatedAsr, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let command = WorkerCommand::new(std::env::current_exe().unwrap())
         .arg("--exact")
@@ -165,7 +188,7 @@ fn engine() -> (AsrEngine, tempfile::TempDir) {
     let backend = IsolatedAsr::spawn_command(command).unwrap();
     assert!(backend.capabilities().reports_partials);
     assert_eq!(backend.name(), "scripted@worker");
-    (AsrEngine::new(backend), dir)
+    (backend, dir)
 }
 
 fn hints(hints: &[&str]) -> AsrOptions {
@@ -247,6 +270,43 @@ fn events_and_failures_arrive_while_the_session_is_idle() {
     let session = engine.start(RATE, hints(&["fail"]), secs(60)).unwrap();
     let result = session.wait(secs(10)).expect("the stream failed");
     assert_retryable(&result.unwrap_err().error);
+}
+
+#[test]
+fn a_hung_worker_is_killed_after_its_call_timeout() {
+    let (backend, _dir) = backend();
+    let engine = AsrEngine::new(backend.with_call_timeout(Duration::from_millis(500)));
+    let error = run(&engine, &["hang"]).expect_err("the worker hung");
+    assert_retryable(&error);
+    assert!(eventually(Duration::from_secs(10), || engine
+        .active_sessions()
+        == 0));
+    assert!(run(&engine, &[]).unwrap().starts_with("pid"));
+}
+
+#[test]
+fn cancelling_a_session_on_a_hung_worker_frees_its_slot() {
+    let (engine, _dir) = engine();
+    let session = engine.start(RATE, hints(&["hang"]), secs(60)).unwrap();
+    let _ = session.push(tone(1_600), secs(10));
+    std::thread::sleep(Duration::from_millis(200));
+    session.cancel();
+    assert!(eventually(Duration::from_secs(10), || engine
+        .active_sessions()
+        == 0));
+    assert!(run(&engine, &[]).unwrap().starts_with("pid"));
+}
+
+#[test]
+fn a_worker_that_exited_while_idle_is_not_used() {
+    let (engine, _dir) = engine();
+    let first = run(&engine, &["exit"]).unwrap();
+    assert!(eventually(Duration::from_secs(10), || engine
+        .active_sessions()
+        == 0));
+    std::thread::sleep(Duration::from_millis(500));
+    let second = run(&engine, &[]).unwrap();
+    assert_ne!(first, second, "a new worker");
 }
 
 #[test]

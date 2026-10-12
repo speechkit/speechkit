@@ -5,8 +5,12 @@ use std::{
     io::{BufReader, BufWriter},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, RecvTimeoutError},
+    },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -20,6 +24,15 @@ use super::{
 };
 
 const NAME: &str = "speechkit-worker";
+
+/// How long one request may take by default before the worker is taken
+/// as hung and killed.
+const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a worker may still take to answer once its session has
+/// stopped, such as after a cancel.
+const STOPPED_GRACE: Duration = Duration::from_secs(2);
+/// How often a waiting call checks its session.
+const POLL: Duration = Duration::from_millis(100);
 
 fn crashed(detail: impl std::fmt::Display) -> SpeechError {
     SpeechError::backend(NAME, true, format!("the worker process failed: {detail}"))
@@ -143,16 +156,14 @@ impl Worker {
     }
 
     /// Sends `request` and waits for its answer. Every event it produced
-    /// has been forwarded by then.
-    fn call(&mut self, request: &Request) -> Result<(), SpeechError> {
+    /// has been forwarded by then. A worker that does not answer within
+    /// `timeout` is killed, so a hang fails its session like a crash.
+    fn call(&mut self, request: &Request, timeout: Duration) -> Result<(), SpeechError> {
         if self.broken {
             return Err(crashed("it stopped earlier"));
         }
         let reply = match write_frame(&mut self.input, request) {
-            Ok(()) => self
-                .replies
-                .recv()
-                .unwrap_or_else(|_| Reply::Gone("it stopped answering".into())),
+            Ok(()) => self.reply(timeout),
             Err(error) => Reply::Gone(error.to_string()),
         };
         match reply {
@@ -163,6 +174,39 @@ impl Worker {
                 Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
             }
         }
+    }
+
+    /// Waits for the answer to the request just sent: at most `timeout`,
+    /// and at most [`STOPPED_GRACE`] once the attached session has stopped,
+    /// since nobody waits for its work then. A worker past either limit
+    /// is `Gone`.
+    fn reply(&self, timeout: Duration) -> Reply {
+        let started = Instant::now();
+        let mut stopped: Option<Instant> = None;
+        loop {
+            match self.replies.recv_timeout(POLL) {
+                Ok(reply) => return reply,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Reply::Gone("it stopped answering".into());
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            let now = Instant::now();
+            if now.duration_since(started) >= timeout {
+                return Reply::Gone(format!("it did not answer within {timeout:?}"));
+            }
+            let stopping = lock(&self.link)
+                .as_ref()
+                .is_some_and(AsrEvents::is_stopping);
+            if stopping && now.duration_since(*stopped.get_or_insert(now)) >= STOPPED_GRACE {
+                return Reply::Gone("it did not answer after its session stopped".into());
+            }
+        }
+    }
+
+    /// Whether the process is still running.
+    fn is_alive(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
     }
 
     /// Sends the stream's events to `events`, or nowhere.
@@ -232,10 +276,18 @@ struct Pool {
 }
 
 impl Pool {
-    /// An idle worker, or a new one.
+    /// An idle worker that is still running, or a new one. Workers that
+    /// exited while idle are dropped, so they fail no session.
     fn take(&self, name: &str) -> Result<Worker, SpeechError> {
-        if let Some(worker) = lock(&self.idle).pop() {
-            return Ok(worker);
+        loop {
+            // Popped in its own statement, so the lock is not held while a
+            // dead worker is dropped.
+            let idle = lock(&self.idle).pop();
+            let Some(mut worker) = idle else { break };
+            if worker.is_alive() {
+                return Ok(worker);
+            }
+            tracing::debug!(backend = %name, "dropped an idle worker process that had exited");
         }
         let (worker, _, _) = Worker::start(&self.command)?;
         tracing::debug!(backend = %name, "started a worker process");
@@ -258,12 +310,14 @@ impl Pool {
 /// within `start`'s deadline. A worker serves one session at a time, and
 /// goes back to the pool when the session's stream is dropped, so
 /// sessions run in parallel, at the cost of one model load per concurrent
-/// session. If a worker dies, only its session fails, with a retryable
-/// [`SpeechError::Backend`].
+/// session. If a worker dies, or hangs past its
+/// [call timeout](Self::with_call_timeout) and is killed, only its session
+/// fails, with a retryable [`SpeechError::Backend`].
 pub struct IsolatedAsr {
     pool: Arc<Pool>,
     name: String,
     caps: AsrCapabilities,
+    call_timeout: Duration,
 }
 
 impl IsolatedAsr {
@@ -307,7 +361,19 @@ impl IsolatedAsr {
             }),
             name: format!("{name}@worker"),
             caps,
+            call_timeout: CALL_TIMEOUT,
         })
+    }
+
+    /// Sets how long the worker may take to answer one request: to open a
+    /// stream, take a chunk of audio, or finish. A worker that takes
+    /// longer is taken as hung and killed, and its session fails with a
+    /// retryable [`SpeechError::Backend`]. A worker whose session was
+    /// cancelled gets 2 s. Default: 60 s.
+    #[must_use]
+    pub fn with_call_timeout(mut self, timeout: Duration) -> Self {
+        self.call_timeout = timeout;
+        self
     }
 }
 
@@ -327,14 +393,18 @@ impl AsrBackend for IsolatedAsr {
     ) -> Result<Box<dyn AsrStream>, SpeechError> {
         let mut worker = self.pool.take(&self.name)?;
         worker.attach(Some(events));
-        let opened = worker.call(&Request::Open {
-            language: opts.language.clone(),
-            hints: opts.hints.clone(),
-        });
+        let opened = worker.call(
+            &Request::Open {
+                language: opts.language.clone(),
+                hints: opts.hints.clone(),
+            },
+            self.call_timeout,
+        );
         match opened {
             Ok(()) => Ok(Box::new(ProcessStream {
                 worker: Some(worker),
                 pool: self.pool.clone(),
+                call_timeout: self.call_timeout,
             })),
             Err(error) => {
                 self.pool.give_back(worker);
@@ -350,6 +420,7 @@ impl std::fmt::Debug for IsolatedAsr {
             .field("name", &self.name)
             .field("command", &self.pool.command)
             .field("idle", &lock(&self.pool.idle).len())
+            .field("call_timeout", &self.call_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -358,12 +429,13 @@ impl std::fmt::Debug for IsolatedAsr {
 struct ProcessStream {
     worker: Option<Worker>,
     pool: Arc<Pool>,
+    call_timeout: Duration,
 }
 
 impl ProcessStream {
     fn call(&mut self, request: &Request) -> Result<(), SpeechError> {
         match &mut self.worker {
-            Some(worker) => worker.call(request),
+            Some(worker) => worker.call(request, self.call_timeout),
             None => Err(crashed("it is gone")),
         }
     }
@@ -390,7 +462,7 @@ impl Drop for ProcessStream {
     /// the worker to the pool. The session's slot is held until then.
     fn drop(&mut self) {
         if let Some(mut worker) = self.worker.take() {
-            let _ = worker.call(&Request::Close);
+            let _ = worker.call(&Request::Close, self.call_timeout);
             self.pool.give_back(worker);
         }
     }
