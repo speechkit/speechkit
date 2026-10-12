@@ -91,7 +91,9 @@ fn invalid(message: impl std::fmt::Display) -> SpeechError {
 ///
 /// [`SpeechError::InvalidInput`] if the file cannot be read or decoded, is
 /// in a format this build doesn't read, or is longer than
-/// `limits.max_duration`.
+/// `limits.max_duration`; [`SpeechError::Unsupported`] if it is in a
+/// container this build reads but holds a codec it doesn't decode, such as
+/// Opus.
 pub fn read(path: impl AsRef<Path>, limits: DecodeLimits) -> Result<AudioBuffer, SpeechError> {
     let path = path.as_ref();
     let file = File::open(path).map_err(|e| invalid(format_args!("{}: {e}", path.display())))?;
@@ -104,7 +106,16 @@ pub fn read(path: impl AsRef<Path>, limits: DecodeLimits) -> Result<AudioBuffer,
 ///
 /// As [`read`].
 pub fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<AudioBuffer, SpeechError> {
-    from_source(Cursor::new(bytes.to_vec()), limits)
+    decode_owned(bytes.to_vec(), limits)
+}
+
+/// [`decode`], for bytes the caller owns, such as an upload's body, so
+/// they are not copied.
+pub(crate) fn decode_owned(
+    bytes: impl AsRef<[u8]> + Send + Sync + 'static,
+    limits: DecodeLimits,
+) -> Result<AudioBuffer, SpeechError> {
+    from_source(Cursor::new(bytes), limits)
 }
 
 /// Where audio is read from: a file or bytes in memory.

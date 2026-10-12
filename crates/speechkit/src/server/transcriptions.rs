@@ -134,7 +134,7 @@ async fn decode(
     // The blocking decoder retains admission even if its caller times out
     // or disconnects: detached work must still count against the limit.
     let task = tokio::task::spawn_blocking(move || {
-        (audio::decode(&file, DecodeLimits::default()), permit)
+        (audio::decode_owned(file, DecodeLimits::default()), permit)
     });
     let (decoded, permit) = tokio::time::timeout_at(deadline.into(), task)
         .await
@@ -143,7 +143,7 @@ async fn decode(
     let failure = match decoded {
         Ok(buffer) if !buffer.samples.is_empty() => return Ok((buffer, permit)),
         Ok(_) => respond(StatusCode::BAD_REQUEST, "the file contains no audio"),
-        Err(error) if error.to_string().contains("Opus") => {
+        Err(error @ SpeechError::Unsupported(_)) => {
             respond(StatusCode::UNSUPPORTED_MEDIA_TYPE, describe(&error))
         }
         Err(error) => respond(StatusCode::BAD_REQUEST, describe(&error)),
