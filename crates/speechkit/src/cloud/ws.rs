@@ -209,9 +209,12 @@ impl Ws {
         let mut request = endpoint
             .into_client_request()
             .map_err(|_| SpeechError::InvalidInput("invalid WebSocket endpoint".into()))?;
-        let value = format!("Bearer {}", key.expose()).parse().map_err(|_| {
-            SpeechError::InvalidInput("the API key is not a valid header value".into())
-        })?;
+        let mut value: tokio_tungstenite::tungstenite::http::HeaderValue =
+            format!("Bearer {}", key.expose()).parse().map_err(|_| {
+                SpeechError::InvalidInput("the API key is not a valid header value".into())
+            })?;
+        // Kept out of the request's `Debug` output.
+        value.set_sensitive(true);
         request.headers_mut().insert("Authorization", value);
         for (name, value) in headers {
             let value = value
