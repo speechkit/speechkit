@@ -332,6 +332,8 @@ struct Reading<H> {
     handler: H,
     error: Option<SpeechError>,
     ended: bool,
+    /// The connection was dropped: no message reaches the handler any more.
+    dropped: bool,
 }
 
 struct Reader<H> {
@@ -345,13 +347,55 @@ impl<H> Reader<H> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    /// Records that the connection ended with `error`.
+    fn end(&self, error: SpeechError)
+    where
+        H: Handler,
+    {
+        let mut state = self.lock();
+        state.handler.failed(&error);
+        state.error = Some(error);
+        state.ended = true;
+        drop(state);
+        self.changed.notify_all();
+    }
+}
+
+impl<H: Handler> Reader<H> {
+    /// Hands one message, or the error that ended the connection, to the
+    /// handler. Returns whether the connection has ended.
+    fn handle(&self, message: Result<Incoming, SpeechError>) -> bool {
+        let mut state = self.lock();
+        if state.dropped {
+            return true;
+        }
+        // The connection is gone after an error from it.
+        let gone = message.is_err();
+        let outcome = match message {
+            Ok(message) => state.handler.on_message(message),
+            Err(_) if state.handler.may_close() => Ok(()),
+            Err(error) => Err(error),
+        };
+        let failed = outcome.is_err();
+        if let Err(error) = outcome {
+            state.handler.failed(&error);
+            state.error = Some(error);
+        }
+        state.ended = gone || failed;
+        drop(state);
+        self.changed.notify_all();
+        gone || failed
+    }
 }
 
 /// A connection whose messages a task on the runtime hands to a
 /// [`Handler`] as they arrive, so events reach the session while no audio
-/// is pushed (A-10). The stream sends from its own thread. Dropping it
-/// stops the task and closes the socket before returning, since the
-/// session's slot is held until then.
+/// is pushed (A-10). The handler runs on the runtime's blocking threads,
+/// since sending a segment may run a post-processor's model. The stream
+/// sends from its own thread. Dropping it stops the task, waits for a
+/// message in the handler, and closes the socket before returning, since
+/// the session's slot is held until then.
 pub(crate) struct Pushed<H> {
     runtime: CloudRuntime,
     backend: &'static str,
@@ -378,6 +422,7 @@ impl Ws {
                 handler,
                 error: None,
                 ended: false,
+                dropped: false,
             }),
             changed: std::sync::Condvar::new(),
         });
@@ -390,23 +435,19 @@ impl Ws {
                         Ok(None) => continue,
                         Err(error) => Err(error),
                     };
-                    let mut state = reader.lock();
-                    // The connection is gone after an error from it.
-                    let gone = message.is_err();
-                    let outcome = match message {
-                        Ok(message) => state.handler.on_message(message),
-                        Err(_) if state.handler.may_close() => Ok(()),
-                        Err(error) => Err(error),
-                    };
-                    let failed = outcome.is_err();
-                    if let Err(error) = outcome {
-                        state.handler.failed(&error);
-                        state.error = Some(error);
-                    }
-                    state.ended = gone || failed;
-                    drop(state);
-                    reader.changed.notify_all();
-                    if gone || failed {
+                    // Awaited before the next message, so they stay in order.
+                    let handling = reader.clone();
+                    let ended = tokio::task::spawn_blocking(move || handling.handle(message))
+                        .await
+                        .unwrap_or_else(|join| {
+                            reader.end(SpeechError::backend(
+                                backend,
+                                false,
+                                format!("handling a message failed: {join}"),
+                            ));
+                            true
+                        });
+                    if ended {
                         return;
                     }
                 }
@@ -514,6 +555,9 @@ impl<H> Drop for Pushed<H> {
             task.abort();
             let _ = self.runtime.block_on(task);
         }
+        // The aborted task may have left a message with the handler: wait
+        // for it, and keep any later one from reaching the handler.
+        self.reader.lock().dropped = true;
         if let Some(mut sink) = self.sink.take() {
             let _ = self.runtime.block_on(async {
                 let _ = tokio::time::timeout(CLOSE_WAIT, sink.send(close_frame())).await;
