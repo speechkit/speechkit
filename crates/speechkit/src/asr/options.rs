@@ -165,9 +165,9 @@ pub struct AsrLimits {
     /// How much audio the input queue holds, which is also the longest
     /// chunk one push takes. Default: 2 s.
     pub input_queue: Duration,
-    /// The most history a session keeps for its readers: segment text plus
-    /// a small fixed cost per speech event. Default: 8 MiB, about 100 hours
-    /// of speech.
+    /// The most history a session keeps for its readers: segment text, the
+    /// partial results not yet committed, and a small fixed cost per speech
+    /// event. Default: 8 MiB, about 100 hours of speech.
     pub max_history_bytes: usize,
 }
 
