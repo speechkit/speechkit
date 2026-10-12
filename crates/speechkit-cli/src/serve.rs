@@ -1,6 +1,11 @@
 //! `speechkit serve`.
 
-use std::{io::Write, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    io::Write,
+    net::{SocketAddr, ToSocketAddrs},
+    path::Path,
+    time::Duration,
+};
 
 use speechkit::Secret;
 use speechkit::server::{RunningServer, Server};
@@ -50,9 +55,17 @@ fn model_name(explicit: Option<&String>, model: Option<&Path>, backend: &str) ->
     })
 }
 
+/// Whether every address `bind` names, such as `localhost:8080`, is a
+/// loopback address. A name that does not resolve is not.
 fn is_loopback(bind: &str) -> bool {
-    bind.parse::<SocketAddr>()
-        .is_ok_and(|address| address.ip().is_loopback())
+    bind.to_socket_addrs().is_ok_and(|addresses| {
+        let mut any = false;
+        let all = addresses.into_iter().all(|address| {
+            any = true;
+            address.ip().is_loopback()
+        });
+        any && all
+    })
 }
 
 /// Builds the engine and starts serving it, without blocking.
@@ -131,6 +144,7 @@ mod tests {
     fn loopback_detection() {
         assert!(is_loopback("127.0.0.1:8080"));
         assert!(is_loopback("[::1]:80"));
+        assert!(is_loopback("localhost:8080"));
         assert!(!is_loopback("0.0.0.0:8080"));
         assert!(!is_loopback("not an address"));
     }
