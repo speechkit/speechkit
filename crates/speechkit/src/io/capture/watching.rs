@@ -95,12 +95,30 @@ impl Wake {
     /// capture has stopped; or the errors
     /// [`AsrEngine::start`](crate::asr::AsrEngine::start) returns at once
     /// for the options.
-    pub fn listen(
+    pub fn listen(self, engine: &AsrEngine, options: AsrOptions) -> Result<Listening, SpeechError> {
+        self.listen_with(engine, options, ListenOptions::default())
+    }
+
+    /// [`listen`](Self::listen), with what the listening records and how
+    /// much it holds set by `listen`. The listening starts right after the
+    /// keyword, so `listen.start` must be `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`listen`](Self::listen), and [`SpeechError::InvalidInput`] if
+    /// `listen` sets a start or is otherwise invalid.
+    pub fn listen_with(
         mut self,
         engine: &AsrEngine,
         options: AsrOptions,
+        listen: ListenOptions,
     ) -> Result<Listening, SpeechError> {
-        let listen = ListenOptions::default();
+        listen.validate()?;
+        if listen.start.is_some() {
+            return Err(SpeechError::InvalidInput(
+                "a listening from a keyword starts right after it; leave start unset".into(),
+            ));
+        }
         let reservation = self.reservation.take().ok_or(SpeechError::Capacity)?;
         let timeline = &self.device.timeline;
         let Some(hold) = self.hold.upgrade() else {
