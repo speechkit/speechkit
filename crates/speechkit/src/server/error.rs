@@ -46,11 +46,17 @@ pub(crate) fn status_of(error: &SpeechError) -> StatusCode {
     }
 }
 
-/// The error, with its source when there is one.
+/// What a client is told about `error`: what was wrong with its request,
+/// with the source, but only which backend failed. A backend's detail, such
+/// as a worker's path or an upstream service's message, is logged instead.
 pub(crate) fn describe(error: &SpeechError) -> String {
-    match std::error::Error::source(error) {
-        Some(source) => format!("{error}: {source}"),
-        None => error.to_string(),
+    match (error, std::error::Error::source(error)) {
+        (SpeechError::Backend { .. }, Some(source)) => {
+            tracing::warn!(%error, detail = %source, "a request failed in its backend");
+            error.to_string()
+        }
+        (_, Some(source)) => format!("{error}: {source}"),
+        (_, None) => error.to_string(),
     }
 }
 
@@ -103,8 +109,8 @@ mod tests {
             assert_eq!(status_of(&error).as_u16(), status, "{error}");
         }
         assert_eq!(
-            describe(&SpeechError::backend("b", true, "why")),
-            "backend `b` failed: why"
+            describe(&SpeechError::backend("b", true, "/srv/models: why")),
+            "backend `b` failed"
         );
     }
 

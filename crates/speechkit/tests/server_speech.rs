@@ -364,12 +364,10 @@ async fn dashscope_open_runs_outside_tokio_tasks() {
     )
     .unwrap();
     let engine = TtsEngine::new(backend);
+    // The peer's 503 is a retryable backend failure, answered with 502; its
+    // detail is logged, not sent. A nested-runtime panic would be a 500.
     let (status, body) = send(&app(engine), post(&json!({"input":"hi"}))).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(
-        String::from_utf8(body)
-            .unwrap()
-            .contains("handshake returned HTTP 503")
-    );
+    assert!(!String::from_utf8(body).unwrap().contains("HTTP 503"));
     server.abort();
 }
