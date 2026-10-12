@@ -284,6 +284,15 @@ fn unpack(model: &Model, tar: impl Read, staging: &Path) -> Result {
         // components and would not see the suffix.
         let name = path.to_string_lossy();
         if model.nested && TARBALL_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            // The archive's hash is checked only after it is unpacked, so a
+            // member must not name a place outside `staging`; `unpack_in`
+            // checks this for the members it writes.
+            if !path
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(format!("{url}: {name}: a member outside the archive"));
+            }
             let parent = path
                 .parent()
                 .map_or_else(|| staging.to_path_buf(), |p| staging.join(p));
@@ -702,6 +711,48 @@ mod tests {
             );
             assert!(!staging.join("root/pkg.tar.gz").exists());
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_nested_member_outside_the_archive_is_refused() {
+        let dir = std::env::temp_dir().join(format!("xtask-escape-{}", random_suffix()));
+        fs::create_dir_all(&dir).unwrap();
+        let archive_path = dir.join("outer.tar.gz");
+        let encoder = flate2::write::GzEncoder::new(
+            File::create(&archive_path).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o644);
+        // tar-rs refuses `..` on write, so the name is set on the raw
+        // header, as a hostile archive would carry it.
+        let name = b"../escape/pkg.tar.gz";
+        header.as_old_mut().name[..name.len()].copy_from_slice(name);
+        header.set_cksum();
+        tar.append(&header, &b""[..]).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+        let model = Model {
+            id: "eval".into(),
+            name: "root".into(),
+            archive: Archive {
+                url: "https://example.com/outer.tar.gz".into(),
+                sha256: String::new(),
+                size: 0,
+            },
+            files: Vec::new(),
+            extras: Vec::new(),
+            include: Vec::new(),
+            nested: true,
+        };
+        let staging = dir.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        let tar = tar_stream(&model.archive.url, File::open(&archive_path).unwrap()).unwrap();
+        let error = unpack(&model, tar, &staging).unwrap_err();
+        assert!(error.contains("outside the archive"), "{error}");
+        assert!(!dir.join("escape").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
