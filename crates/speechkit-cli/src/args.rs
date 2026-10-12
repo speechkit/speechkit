@@ -45,7 +45,7 @@ pub enum Command {
     Stream(StreamArgs),
     /// Serve an OpenAI-compatible transcription (and speech) API.
     Serve(ServeArgs),
-    /// Transcribe a microphone until Enter is pressed.
+    /// Transcribe a microphone until Enter or Ctrl+C.
     Mic(MicArgs),
     /// Synthesize speech to a WAV file or the speakers.
     Speak(SpeakArgs),
