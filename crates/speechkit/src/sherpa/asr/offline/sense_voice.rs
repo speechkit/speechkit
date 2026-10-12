@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use crate::{
@@ -43,19 +43,28 @@ pub(crate) struct SenseVoiceConfig<'a> {
     pub inference: Inference,
 }
 
+/// A recognizer for one language, built on first use.
+type Slot = Arc<Mutex<Option<Arc<NativeRecognizer>>>>;
+
 /// SenseVoice, an offline model for Chinese, English, Japanese, Korean,
 /// and Cantonese that writes its own punctuation.
 ///
 /// sherpa-onnx fixes the language when a recognizer is built, so a session
 /// that overrides the language gets a recognizer built for it on first use
 /// and cached for later sessions. Each costs as much memory as the first.
+/// Building one holds only that language's slot, so sessions in other
+/// languages keep recognizing meanwhile.
 pub(crate) struct SenseVoice {
     files: ModelFiles,
     inference: Inference,
     /// The language used when a session names none.
     language: &'static str,
     caps: AsrCapabilities,
-    recognizers: Mutex<HashMap<&'static str, Arc<NativeRecognizer>>>,
+    recognizers: Mutex<HashMap<&'static str, Slot>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl SenseVoice {
@@ -81,14 +90,19 @@ impl SenseVoice {
         Ok(model)
     }
 
+    /// The recognizer for `language`, built on first use.
     fn recognizer(&self, language: &'static str) -> Result<Arc<NativeRecognizer>, SpeechError> {
-        let mut cache = self
-            .recognizers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(recognizer) = cache.get(language) {
+        let slot = lock(&self.recognizers).entry(language).or_default().clone();
+        let mut slot = lock(&slot);
+        if let Some(recognizer) = &*slot {
             return Ok(recognizer.clone());
         }
+        let recognizer = Arc::new(self.build(language)?);
+        *slot = Some(recognizer.clone());
+        Ok(recognizer)
+    }
+
+    fn build(&self, language: &'static str) -> Result<NativeRecognizer, SpeechError> {
         let files = &self.files;
         let AsrFiles::Flat { model, tokens } = &files.files else {
             return Err(SpeechError::InvalidModel(
@@ -103,11 +117,8 @@ impl SenseVoice {
         native_config.model_config.tokens = path(tokens);
         native_config.model_config.num_threads = self.inference.threads_i32();
         native_config.model_config.provider = Some(self.inference.provider.as_str().into());
-        let recognizer = NativeRecognizer::create(&native_config)
-            .ok_or_else(|| load_failed("SenseVoice", &files.root))?;
-        let recognizer = Arc::new(recognizer);
-        cache.insert(language, recognizer.clone());
-        Ok(recognizer)
+        NativeRecognizer::create(&native_config)
+            .ok_or_else(|| load_failed("SenseVoice", &files.root))
     }
 }
 
@@ -127,6 +138,13 @@ impl OfflineRecognizer for SenseVoice {
         };
         let recognizer = self.recognizer(language)?;
         super::transcribe(&recognizer, &recognizer.create_stream(), samples)
+    }
+
+    fn check(&self, opts: &AsrOptions) -> Result<(), SpeechError> {
+        match &opts.language {
+            Some(code) => language(code).map(drop),
+            None => Ok(()),
+        }
     }
 }
 

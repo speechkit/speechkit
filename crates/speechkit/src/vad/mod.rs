@@ -84,6 +84,19 @@ pub trait OfflineRecognizer: Send + Sync + 'static {
     ///
     /// Any error the recognizer hits. The session fails with it.
     fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError>;
+
+    /// Checks a session's options as its stream opens, so an option the
+    /// recognizer cannot use fails `start` rather than the first
+    /// utterance. By default, accepts every option.
+    ///
+    /// # Errors
+    ///
+    /// [`SpeechError::InvalidInput`] or [`SpeechError::Unsupported`] for
+    /// an option the recognizer cannot use.
+    fn check(&self, opts: &AsrOptions) -> Result<(), SpeechError> {
+        let _ = opts;
+        Ok(())
+    }
 }
 
 /// A boxed recognizer, so a `Box<dyn OfflineRecognizer>` can run behind a
@@ -99,5 +112,9 @@ impl<R: OfflineRecognizer + ?Sized> OfflineRecognizer for Box<R> {
 
     fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError> {
         (**self).recognize(samples, opts)
+    }
+
+    fn check(&self, opts: &AsrOptions) -> Result<(), SpeechError> {
+        (**self).check(opts)
     }
 }
