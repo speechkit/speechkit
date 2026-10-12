@@ -9,7 +9,10 @@
 //! The worker speaks a small protocol over its stdin and stdout: after a
 //! handshake line, length-prefixed frames, each holding a version byte and
 //! a postcard-encoded message. Anything a native library prints before the
-//! handshake is skipped.
+//! handshake is skipped. After it, stdout belongs to the protocol: text
+//! written there breaks a frame, which the parent treats as a crash, so it
+//! kills the worker and fails its session with a retryable error. sherpa-onnx
+//! and onnxruntime log to stderr, which the worker shares with the parent.
 
 mod client;
 mod config;
