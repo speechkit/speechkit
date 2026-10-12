@@ -6,9 +6,13 @@ use crate::SpeechError;
 /// punctuation.
 ///
 /// Configure it with [`AsrEngine::with_post_processor`](super::AsrEngine::with_post_processor).
-/// The session worker applies it only to committed segments, never to
-/// partial results. If it fails, the original text is kept and a warning
-/// is logged; the session does not fail.
+/// It applies only to committed segments, never to partial results, and
+/// runs on whichever thread the backend sends a segment from: the session's
+/// own, or one the backend runs. The built-in cloud backends send from
+/// blocking threads, never from an async runtime's workers. Segments
+/// sent from several threads are processed one at a time, in order. If it
+/// fails, the original text is kept and a warning is logged; the session
+/// does not fail.
 pub trait PostProcessor: Send + Sync + 'static {
     /// Returns the rewritten text.
     ///
