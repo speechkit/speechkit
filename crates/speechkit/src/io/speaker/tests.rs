@@ -297,6 +297,23 @@ fn a_lost_device_fails_every_playback() {
     assert!(speaker.play(tone(0.1, 10)).is_err());
 }
 
+/// After the loss, the player sleeps until the speaker is dropped, even
+/// after a `stop` that has nothing left to stop.
+#[test]
+fn a_lost_device_does_not_make_the_player_spin() {
+    let (speaker, fake) = Speaker::fake(RATE);
+    let playing = speaker.play(tone(0.1, 400)).unwrap();
+    fake.lose();
+    assert!(playing.finish(ms(1_000)).is_err());
+    speaker.stop();
+    std::thread::sleep(ms(50));
+    let before = speaker.shared.loops.load(Ordering::Relaxed);
+    std::thread::sleep(ms(200));
+    let loops = speaker.shared.loops.load(Ordering::Relaxed) - before;
+    assert!(loops < 5, "the player looped {loops} times in 200 ms");
+    drop(speaker);
+}
+
 #[test]
 fn silence_while_a_sound_is_due_is_an_underrun() {
     let (speaker, fake) = Speaker::fake(RATE);
