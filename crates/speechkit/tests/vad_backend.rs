@@ -5,9 +5,9 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use speechkit::{
-    AudioBuffer, SampleRate,
-    asr::{AsrBackend, AsrEngine, AsrEvent},
-    vad::{EnergyVad, EnergyVadConfig, VadBackend},
+    AudioBuffer, SampleRate, SpeechError,
+    asr::{AsrBackend, AsrCapabilities, AsrEngine, AsrEvent, AsrOptions},
+    vad::{EnergyVad, EnergyVadConfig, OfflineRecognizer, VadBackend},
 };
 use speechkit_testkit::{
     asr::Collected,
@@ -53,6 +53,59 @@ fn rate_mismatch_is_rejected() {
     let vad = EnergyVad::new(EnergyVadConfig::default().with_sample_rate(SampleRate::HZ_8000));
     let error = VadBackend::new(CountingRecognizer::new(0), vad).unwrap_err();
     assert!(error.to_string().contains("8000 Hz"), "{error}");
+}
+
+/// Accepts only English, like a recognizer fixed to a language list.
+struct EnglishOnly {
+    inner: CountingRecognizer,
+    caps: AsrCapabilities,
+}
+
+impl OfflineRecognizer for EnglishOnly {
+    fn name(&self) -> &'static str {
+        "english-only"
+    }
+
+    fn capabilities(&self) -> &AsrCapabilities {
+        &self.caps
+    }
+
+    fn recognize(&self, samples: &[f32], opts: &AsrOptions) -> Result<String, SpeechError> {
+        self.inner.recognize(samples, opts)
+    }
+
+    fn check(&self, opts: &AsrOptions) -> Result<(), SpeechError> {
+        match opts.language.as_deref() {
+            None | Some("en") => Ok(()),
+            Some(other) => Err(SpeechError::InvalidInput(format!("no {other}"))),
+        }
+    }
+}
+
+#[test]
+fn a_language_the_recognizer_rejects_fails_start() {
+    let inner = CountingRecognizer::new(0);
+    let mut caps = inner.capabilities().clone();
+    caps.accepts_language = true;
+    let backend = VadBackend::new(EnglishOnly { inner, caps }, WindowVad::new(8_000)).unwrap();
+    let engine = AsrEngine::new(backend);
+    let error = engine
+        .start(
+            SampleRate::HZ_16000,
+            options().with_language("fr"),
+            secs(10),
+        )
+        .unwrap_err();
+    assert!(matches!(error, SpeechError::InvalidInput(_)), "{error}");
+    assert!(
+        engine
+            .start(
+                SampleRate::HZ_16000,
+                options().with_language("en"),
+                secs(10)
+            )
+            .is_ok()
+    );
 }
 
 #[test]

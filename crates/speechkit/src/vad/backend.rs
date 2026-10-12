@@ -93,6 +93,7 @@ impl<R: OfflineRecognizer, V: VadModel> AsrBackend for VadBackend<R, V> {
         opts: &AsrOptions,
         events: AsrEvents,
     ) -> Result<Box<dyn AsrStream>, SpeechError> {
+        self.recognizer.check(opts)?;
         let vad = self.vad.create(self.max_utterance)?;
         Ok(Box::new(VadStream {
             events,
