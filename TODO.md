@@ -11,12 +11,13 @@ Each item says how sure it is:
 
 - `cargo fmt --all -- --check`: passes.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passes.
-- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored.
-- Not run in the review: `cargo doc`, `cargo deny check`, `cargo hack`, the loom tests, the `#[ignore]` model tests.
+- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored. After Phase 2: 510 passed, 0 failed, 43 ignored.
+- After Phase 2, `cargo doc` with `-D warnings` and `cargo hack check -p speechkit --each-feature --no-dev-deps` also pass.
+- Not run yet: `cargo deny check`, the loom tests, the `#[ignore]` model tests. Item 7 changes session synchronization, but not the `slots` or `history` code the loom tests model.
 
 ## Review findings
 
-### 1. `d02_behind_fails` is flaky (Confirmed; fixed 2026-11-11, not committed)
+### 1. `d02_behind_fails` is flaky (Confirmed; fixed 2026-11-11)
 
 - [x] Make the overflow half of the test deterministic.
 - [x] Fix the stop race behind its last assertion.
@@ -28,9 +29,11 @@ It was two races, not one:
 
 Verified: the device suites passed 400 sequential runs (100 per binary) and 120 runs of `io_contract` at 8 in parallel, plus 80 loaded runs each of the other device binaries and the io unit tests. New unit tests cover the capped callback, a stop ahead of the moved audio, a stop past an ended timeline, and the delivered count.
 
-### 2. `audio::read` rejects the WAV the server produces (Confirmed)
+### 2. `audio::read` rejects the WAV the server produces (Confirmed; fixed in 72c3ebe)
 
-- [ ] Read WAV files whose size fields are `0xFFFFFFFF`.
+- [x] Read WAV files whose size fields are `0xFFFFFFFF`.
+
+Done as planned for `0xFFFFFFFF`. A data length past the end of the source is not special-cased, and there is no test for it yet. The `server_speech.rs` WAV test now decodes the server's output with `audio::read`. Still to do: add the header to the `read_wav_bytes` fuzz corpus.
 
 `POST /v1/audio/speech` answers `wav` by default with a streaming header whose RIFF and data sizes are `0xFFFFFFFF` (`crates/speechkit/src/server/speech.rs:119`). hound refuses it ("data chunk length is not a multiple of sample size"), and `from_source` (`crates/speechkit/src/audio/mod.rs:142`) returns that as `Invalid`, so symphonia is never tried. The same header comes from `ffmpeg -f wav -`.
 
@@ -38,9 +41,13 @@ So `speechkit transcribe`, `audio::read`, `audio::decode`, and the server's own 
 
 Fix: in `wav::read`, treat a data length of `0xFFFFFFFF` (and a length past the end of the source) as "until the end", still bounded by `DecodeLimits::max_duration` while reading. Add a round-trip test that feeds `/v1/audio/speech` output to `audio::decode`, and add the header to the `read_wav_bytes` fuzz corpus.
 
-### 3. A worker that hangs before its handshake is never killed (Read)
+### 3. A worker that hangs before its handshake is never killed (Confirmed; fixed in 5822b91)
 
-- [ ] Bound worker startup with a timeout.
+- [x] Bound worker startup with a timeout.
+- [ ] `IsolatedAsr::spawn` builds its own `WorkerCommand`, so its callers get the 120 s default and cannot change it. Add a way, or document `spawn_command` as the way.
+- [ ] The blocking write in `Worker::call`, below, is not fixed; it belongs to Phase 4's bounded-waits audit.
+
+Reproduced with a fake worker that stalls before its handshake: `spawn_command` blocked, and so did a session that had to start a new worker. `WorkerCommand::with_start_timeout` (120 s by default) now bounds the wait, and a worker that passes it is killed with a retryable error. SECURITY.md says so.
 
 `Worker::start` (`crates/speechkit/src/sherpa/process/client.rs:112`) reads the handshake with a blocking read and no timeout. The worker loads its model before it prints the handshake, so a hang in the native loader, which is what `IsolatedAsr` exists to contain, blocks forever.
 
@@ -53,9 +60,11 @@ Also, `Worker::call` writes the request with a blocking write. A frame larger th
 
 Fix: start the reader thread before the handshake and receive the hello through the reply channel with a timeout (a `with_start_timeout`, defaulting to something generous for model loads); kill the child when it passes. Test with a worker command that sleeps before its handshake (`sherpa_process.rs`).
 
-### 4. A streaming transcription client that stops reading holds an admission permit (Read)
+### 4. A streaming transcription client that stops reading holds an admission permit (Confirmed; fixed in 774a623)
 
-- [ ] Give the SSE path a send deadline.
+- [x] Give the SSE path a send deadline.
+
+Reproduced with a client that holds an unread `stream=true` response. A deadline alone was not enough: the permit lived in the response stream's state, and a body nobody polls is never dropped. The permit now belongs to the blocking thread that forwards the events. SECURITY.md is updated.
 
 `forward` (`crates/speechkit/src/server/transcriptions.rs:321`) calls `blocking_send` with no deadline. When a client stops reading a `stream=true` response larger than the socket buffers, the channel fills, the blocking thread waits forever, and the admission permit, which lives in the response stream's state, is never released. As many such connections as the engine has session slots (8 by default) make every transcription request answer 503 until those connections die.
 
@@ -63,25 +72,29 @@ Fix: start the reader thread before the handshake and receive the hello through 
 
 Fix: pass the request deadline to `forward` and send with it, as `pump` does; when it passes, cancel the session and return, so the stream ends and the guard drops. Then update the SECURITY.md row. Test in `server.rs` with a client that never reads.
 
-### 5. `serve --bind localhost:8080` cannot work (Read)
+### 5. `serve --bind localhost:8080` cannot work (Confirmed; fixed in 89d3c4b)
 
-- [ ] Resolve host names in `Server::start`, or reject them before the model loads.
+- [x] Resolve host names in `Server::start`, or reject them before the model loads.
+
+Both: `start` resolves and binds the first address that works, and the CLI resolves `--bind` before it builds the engine, so a bad name is a usage error. Note for tests: this machine's resolver answers every name, even `*.invalid`, so no test relies on a name failing to resolve.
 
 Commit 976c662 stopped the missing-authentication warning for names that resolve to loopback, but `Server::start` (`crates/speechkit/src/server/mod.rs:72`) parses the address as a literal `SocketAddr`. The user waits for the model to load, then gets "invalid bind address".
 
 Fix (preferred): resolve with `tokio::net::lookup_host` in `start` and bind the first address that works; document that `with_bind` takes `host:port`. Otherwise, validate `--bind` in the CLI before building the engine. Either way, add a CLI test that serves on `localhost:0`.
 
-### 6. A CLI timeout prints "cancelled" (Read)
+### 6. A CLI timeout prints "cancelled" (Confirmed; fixed in 8312714)
 
-- [ ] Report `DeadlineExceeded` when `--timeout` passes.
+- [x] Report `DeadlineExceeded` when `--timeout` passes.
 
 `show_until_done` (`crates/speechkit-cli/src/progress.rs:70`) calls `session.cancel()` when its deadline passes, so `transcribe` and `stream` end with `error: cancelled`.
 
 Fix: call `session.finish(deadline)` there instead; with the deadline passed it settles the session as `DeadlineExceeded` at once. Add a CLI test with a fake backend that never finishes and `--timeout 1`.
 
-### 7. Late events are recorded after a session has failed (Read; minor)
+### 7. Late events are recorded after a session has failed (Confirmed; fixed in 3da75ee)
 
-- [ ] Keep the session "stopping" until its result is published.
+- [x] Keep the session "stopping" until its result is published.
+
+Reproduced through both paths, a failed call and a failure reported between calls: the late segment reached readers and the failure's confirmed transcript. The fake gained `Trigger::OnCancel`. The new check is `a03_late_events_after_a_failure_discarded`; the rule itself is unchanged.
 
 `Running::run` (`crates/speechkit/src/asr/session/worker.rs:132`) takes `core.failure` before it cancels and drops the stream. From then until `settle_failure`, `Shared::stopping` is false again: events the stream sends from `cancel` or from its own threads are recorded and reach readers, and a push is accepted and then silently dropped. The comment beside it says late events are discarded (A-03). The same window exists when `drive` returns an error, where `failure` was never set.
 
@@ -89,16 +102,16 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 
 ### Smaller notes
 
-- [ ] `require_auth` (`crates/speechkit/src/server/error.rs:75`) matches `Bearer ` case-sensitively; the scheme is case-insensitive in RFC 9110. Accept `bearer` too.
-- [ ] `Server::with_auth(Secret::new(""))` accepts the header `Authorization: Bearer `. The CLI cannot produce it (`Secret::from_env` refuses an empty value), but the library can. Refuse an empty token in `start` and `router`.
-- [ ] `RunningServer` stops the server when it is dropped (the shutdown sender drops). That is reasonable, but undocumented: `let _ = server.start(..).await?` stops at once. Say so in its doc comment, and mark it `#[must_use]`.
-- [ ] `IsolatedAsr`'s idle pool only grows: after a burst it keeps one loaded model per peak concurrent session. Consider a cap or an idle timeout.
+- [x] (69ded22) `require_auth` (`crates/speechkit/src/server/error.rs:75`) matches `Bearer ` case-sensitively; the scheme is case-insensitive in RFC 9110. Accept `bearer` too.
+- [x] (9072ac8) `Server::with_auth(Secret::new(""))` accepts the header `Authorization: Bearer `. The CLI cannot produce it (`Secret::from_env` refuses an empty value), but the library can. Refuse an empty token in `start` and `router`. `router` cannot return an error, so with an empty token it answers 401 to every `/v1/` request.
+- [x] (931edff) `RunningServer` stops the server when it is dropped (the shutdown sender drops). That is reasonable, but undocumented: `let _ = server.start(..).await?` stops at once. Say so in its doc comment, and mark it `#[must_use]`.
+- [ ] `IsolatedAsr`'s idle pool only grows: after a burst it keeps one loaded model per peak concurrent session. Consider a cap or an idle timeout. Left open: it needs a design decision, not a fix.
 
 ## Proposal
 
 In order. The first two phases are small and should each be a handful of `fix(...)` commits; the later ones are larger and need a decision before work starts.
 
-### Phase 1: make the checks trustworthy (done 2026-11-11, not committed)
+### Phase 1: make the checks trustworthy (done 2026-11-11)
 
 - [x] Fix item 1.
 - [x] `--no-fail-fast` everywhere tests run. `ci.yml` already had it; the review was wrong there. Nightly's macOS/Windows `test` job and its `test-minimal` step did not, and now do.
@@ -107,10 +120,10 @@ In order. The first two phases are small and should each be a handful of `fix(..
   - `io_scenarios.rs:511` expects the player to have skipped a reply within 100 ms.
   - `speaker/tests.rs:271` expects the producer to be waiting after 100 ms; it already says "rerun on a less loaded machine" when not.
 
-### Phase 2: fix the findings
+### Phase 2: fix the findings (done 2026-11-11)
 
-- [ ] Items 2 to 7 and the smaller notes, one commit each, test first. Items 3 to 7 were found by reading, so the test is also the confirmation; if one does not reproduce, drop the item and note why here.
-- [ ] Update SECURITY.md where a fix changes what it claims (items 3 and 4).
+- [x] Items 2 to 7 and the smaller notes, one commit each, test first. Items 3 to 7 were found by reading, so the test is also the confirmation. Every item reproduced, so none was dropped. The pool cap is left open on purpose, as are the follow-ups listed under items 2 and 3.
+- [x] Update SECURITY.md where a fix changes what it claims: items 3 and 4, and the empty auth token.
 
 ### Phase 3: finish the review
 
