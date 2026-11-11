@@ -2,7 +2,7 @@
 
 use std::{
     ffi::OsString,
-    io::{BufReader, BufWriter},
+    io::{BufReader, BufWriter, Write},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
@@ -100,7 +100,13 @@ type Link = Arc<Mutex<Option<AsrEvents>>>;
 /// A running worker, serving one stream at a time.
 struct Worker {
     process: Child,
-    input: BufWriter<ChildStdin>,
+    /// Encoded requests for the writer thread. A blocking write to a worker
+    /// that stopped reading would hold the caller past any timeout, so the
+    /// caller waits for [`written`](Self::written) instead.
+    requests: Option<mpsc::Sender<Vec<u8>>>,
+    /// The outcome of each write the writer thread made.
+    written: mpsc::Receiver<std::io::Result<()>>,
+    writer: Option<JoinHandle<()>>,
     replies: mpsc::Receiver<Reply>,
     link: Link,
     reader: Option<JoinHandle<()>>,
@@ -189,9 +195,18 @@ impl Worker {
                 return Err(crashed(format!("{error} ({status})")));
             }
         };
+        let (requests, written, writer) = match spawn_writer(input) {
+            Ok(writer) => writer,
+            Err(error) => {
+                abandon(process, reader);
+                return Err(crashed(error));
+            }
+        };
         let worker = Self {
             process,
-            input: BufWriter::new(input),
+            requests: Some(requests),
+            written,
+            writer: Some(writer),
             replies,
             link,
             reader: Some(reader),
@@ -201,15 +216,17 @@ impl Worker {
     }
 
     /// Sends `request` and waits for its answer. Every event it produced
-    /// has been forwarded by then. A worker that does not answer within
-    /// `timeout` is killed, so a hang fails its session like a crash.
+    /// has been forwarded by then. A worker that does not take the request
+    /// and answer within `timeout` is killed, so a hang fails its session
+    /// like a crash.
     fn call(&mut self, request: &Request, timeout: Duration) -> Result<(), SpeechError> {
         if self.broken {
             return Err(crashed("it stopped earlier"));
         }
-        let reply = match write_frame(&mut self.input, request) {
-            Ok(()) => self.reply(timeout),
-            Err(error) => Reply::Gone(error.to_string()),
+        let started = Instant::now();
+        let reply = match self.send(request, timeout) {
+            Ok(()) => self.reply(timeout.saturating_sub(started.elapsed())),
+            Err(gone) => gone,
         };
         match reply {
             Reply::Done => Ok(()),
@@ -217,6 +234,30 @@ impl Worker {
             Reply::Gone(detail) => {
                 self.broken = true;
                 Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
+            }
+        }
+    }
+
+    /// Hands `request` to the writer thread and waits up to `timeout` for
+    /// the worker to take it.
+    fn send(&self, request: &Request, timeout: Duration) -> Result<(), Reply> {
+        let mut frame = Vec::new();
+        write_frame(&mut frame, request).map_err(|error| Reply::Gone(error.to_string()))?;
+        let sent = self
+            .requests
+            .as_ref()
+            .is_some_and(|requests| requests.send(frame).is_ok());
+        if !sent {
+            return Err(Reply::Gone("it stopped taking requests".into()));
+        }
+        match self.written.recv_timeout(timeout) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Reply::Gone(error.to_string())),
+            Err(RecvTimeoutError::Timeout) => Err(Reply::Gone(format!(
+                "it did not take the request within {timeout:?}"
+            ))),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(Reply::Gone("it stopped taking requests".into()))
             }
         }
     }
@@ -263,11 +304,46 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.attach(None);
+        // Killing the worker ends a write it was not taking, and its output.
         kill(&mut self.process);
+        drop(self.requests.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
     }
+}
+
+/// The writer thread, which writes each frame it is sent to `input` and
+/// reports how the write went, until a write fails or the sender is gone.
+#[expect(
+    clippy::type_complexity,
+    reason = "the two ends of the writer and its handle, used once"
+)]
+fn spawn_writer(
+    input: ChildStdin,
+) -> std::io::Result<(
+    mpsc::Sender<Vec<u8>>,
+    mpsc::Receiver<std::io::Result<()>>,
+    JoinHandle<()>,
+)> {
+    let (requests, frames) = mpsc::channel::<Vec<u8>>();
+    let (wrote, written) = mpsc::channel();
+    let writer = std::thread::Builder::new()
+        .name("speechkit-worker-writer".into())
+        .spawn(move || {
+            let mut input = BufWriter::new(input);
+            for frame in frames {
+                let result = input.write_all(&frame).and_then(|()| input.flush());
+                let failed = result.is_err();
+                if wrote.send(result).is_err() || failed {
+                    return;
+                }
+            }
+        })?;
+    Ok((requests, written, writer))
 }
 
 /// Stops `process` and describes how it ended.
@@ -414,8 +490,8 @@ impl IsolatedAsr {
         })
     }
 
-    /// Sets how long the worker may take to answer one request: to open a
-    /// stream, take a chunk of audio, or finish. A worker that takes
+    /// Sets how long the worker may take to take and answer one request:
+    /// to open a stream, take a chunk of audio, or finish. A worker that takes
     /// longer is taken as hung and killed, and its session fails with a
     /// retryable [`SpeechError::Backend`]. A worker whose session was
     /// cancelled gets 2 s. Default: 60 s.
