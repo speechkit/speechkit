@@ -318,6 +318,31 @@ async fn auth_requires_the_bearer_token() {
     );
 }
 
+/// The auth scheme is case-insensitive (RFC 9110, section 11.1), and may be
+/// followed by more than one space; the token is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_scheme_is_case_insensitive() {
+    let app = server(engine(FakeAsr::hello_world(), 8))
+        .with_auth(speechkit::Secret::new("let-me-in"))
+        .router();
+    let cases = [
+        ("bearer let-me-in", StatusCode::OK),
+        ("BEARER let-me-in", StatusCode::OK),
+        ("Bearer   let-me-in", StatusCode::OK),
+        ("Bearer LET-ME-IN", StatusCode::UNAUTHORIZED),
+        ("Bearerlet-me-in", StatusCode::UNAUTHORIZED),
+        ("Basic let-me-in", StatusCode::UNAUTHORIZED),
+    ];
+    for (header, expected) in cases {
+        let mut request = post(multipart(&wav(1), &[]));
+        request
+            .headers_mut()
+            .insert("authorization", header.parse().unwrap());
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, expected, "{header:?}: {body}");
+    }
+}
+
 /// The `speechkit::cloud` client and this server speak the same protocol.
 #[test]
 fn interop_with_the_openai_http_client() {

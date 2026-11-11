@@ -72,13 +72,22 @@ pub(crate) async fn require_auth(
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .and_then(bearer_token);
     match presented {
         Some(presented) if constant_time_eq(presented.as_bytes(), token.expose().as_bytes()) => {
             next.run(request).await
         }
         _ => respond(StatusCode::UNAUTHORIZED, "missing or invalid bearer token"),
     }
+}
+
+/// The token of a `Bearer` credential. The scheme is case-insensitive
+/// (RFC 9110, section 11.1), and one or more spaces follow it.
+fn bearer_token(credentials: &str) -> Option<&str> {
+    let (scheme, token) = credentials.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim_start_matches(' '))
 }
 
 /// Compares without an early exit, so timing does not reveal the prefix.
