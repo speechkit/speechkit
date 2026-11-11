@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Barrier},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use speechkit::sherpa::process::{IsolatedAsr, WorkerCommand, serve};
@@ -33,6 +33,10 @@ use speechkit_testkit::{
 };
 
 const MARKER: &str = "SPEECHKIT_FAKE_WORKER_MARKER";
+
+/// A file whose existence makes a starting fake worker hang before its
+/// handshake, as a native model load that never returns would.
+const STALL: &str = "SPEECHKIT_FAKE_WORKER_STALL";
 
 /// A backend whose streams follow their session's hints:
 ///
@@ -156,6 +160,11 @@ fn worker_entry() {
     let Some(marker) = std::env::var_os(MARKER) else {
         return;
     };
+    if std::env::var_os(STALL).is_some_and(|stall| PathBuf::from(stall).exists()) {
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
     let mut caps = AsrCapabilities::new(SampleRate::HZ_16000);
     caps.reports_partials = true;
     caps.accepts_hints = true;
@@ -177,15 +186,20 @@ fn engine() -> (AsrEngine, tempfile::TempDir) {
     (AsrEngine::new(backend), dir)
 }
 
-fn backend() -> (IsolatedAsr, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let command = WorkerCommand::new(std::env::current_exe().unwrap())
+/// The command that starts a fake worker keeping its files in `dir`.
+fn command(dir: &tempfile::TempDir) -> WorkerCommand {
+    WorkerCommand::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("worker_entry")
         .arg("--nocapture")
         .arg("--test-threads=1")
-        .env(MARKER, dir.path().join("marker"));
-    let backend = IsolatedAsr::spawn_command(command).unwrap();
+        .env(MARKER, dir.path().join("marker"))
+        .env(STALL, dir.path().join("stall"))
+}
+
+fn backend() -> (IsolatedAsr, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = IsolatedAsr::spawn_command(command(&dir)).unwrap();
     assert!(backend.capabilities().reports_partials);
     assert_eq!(backend.name(), "scripted@worker");
     (backend, dir)
@@ -307,6 +321,57 @@ fn a_worker_that_exited_while_idle_is_not_used() {
     std::thread::sleep(Duration::from_millis(500));
     let second = run(&engine, &[]).unwrap();
     assert_ne!(first, second, "a new worker");
+}
+
+/// A worker that never finishes starting, as a model load that hangs in
+/// native code would, is killed at its start timeout: the caller gets a
+/// retryable error instead of waiting forever.
+#[test]
+fn a_worker_that_hangs_while_starting_is_killed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("stall"), "").unwrap();
+    let begun = Instant::now();
+    let error =
+        IsolatedAsr::spawn_command(command(&dir).with_start_timeout(Duration::from_millis(500)))
+            .expect_err("the worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
+    let detail = std::error::Error::source(&error).unwrap().to_string();
+    assert!(detail.contains("did not start within"), "{detail}");
+}
+
+/// A session that needs a new worker which hangs while starting fails,
+/// and frees its slot, at the start timeout.
+#[test]
+fn a_session_on_a_worker_that_hangs_while_starting_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend =
+        IsolatedAsr::spawn_command(command(&dir).with_start_timeout(Duration::from_millis(500)))
+            .unwrap();
+    let engine = AsrEngine::new(backend);
+    // The first session takes the idle worker; the second needs a new one.
+    let first = engine.start(RATE, hints(&[]), secs(60)).unwrap();
+    std::fs::write(dir.path().join("stall"), "").unwrap();
+    // Without a start timeout this would wait out the whole deadline, then
+    // fail with DeadlineExceeded, and leave the session's thread blocked.
+    let begun = Instant::now();
+    let error = engine
+        .start(RATE, hints(&[]), secs(20))
+        .expect_err("the second worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
+    drop(first);
+    assert!(eventually(Duration::from_secs(10), || engine
+        .active_sessions()
+        == 0));
 }
 
 #[test]
