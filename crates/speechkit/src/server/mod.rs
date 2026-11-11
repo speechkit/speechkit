@@ -28,7 +28,8 @@ pub use builder::Server;
 impl Server {
     /// The routes, to serve yourself or nest in your own app. Without an
     /// engine, `/health` answers 503, so a health check notices;
-    /// [`start`](Self::start) refuses to serve such a server.
+    /// [`start`](Self::start) refuses to serve such a server. With an empty
+    /// [auth token](Self::with_auth), every `/v1/` request answers 401.
     pub fn router(self) -> Router {
         let max_body_bytes = self.max_body_bytes;
         let body_timeout = self.body_timeout;
@@ -58,8 +59,9 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// [`SpeechError::InvalidInput`] for a bad address or a server with no
-    /// engine, or a backend error if the socket cannot be bound.
+    /// [`SpeechError::InvalidInput`] for a bad address, a server with no
+    /// engine, or an empty [auth token](Self::with_auth); or a backend
+    /// error if the socket cannot be bound.
     pub async fn start(
         self,
         stop: impl Future<Output = ()> + Send + 'static,
@@ -67,6 +69,15 @@ impl Server {
         if self.asr.is_none() && self.tts.is_none() {
             return Err(SpeechError::InvalidInput(
                 "the server has no engine to serve; add one with with_asr or with_tts".into(),
+            ));
+        }
+        if self
+            .auth
+            .as_ref()
+            .is_some_and(|token| token.expose().is_empty())
+        {
+            return Err(SpeechError::InvalidInput(
+                "the auth token is empty; an empty token would let anyone in".into(),
             ));
         }
         let listener = bind(&self.bind).await?;

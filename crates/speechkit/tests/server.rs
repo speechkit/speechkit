@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use speechkit::server::Server;
 use speechkit::{
-    AudioBuffer, SampleRate,
+    AudioBuffer, SampleRate, SpeechError,
     asr::{AsrCapabilities, AsrEngine, AsrLimits},
     audio::encode_wav,
 };
@@ -341,6 +341,32 @@ async fn auth_scheme_is_case_insensitive() {
         let (status, body) = send(&app, request).await;
         assert_eq!(status, expected, "{header:?}: {body}");
     }
+}
+
+/// An empty token would let in anyone who sends an empty one, so the
+/// router lets nobody in with it, and `start` refuses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_auth_token_is_refused() {
+    let app = server(engine(FakeAsr::hello_world(), 8))
+        .with_auth(speechkit::Secret::new(""))
+        .router();
+    for header in ["Bearer ", "Bearer"] {
+        let mut request = post(multipart(&wav(1), &[]));
+        request
+            .headers_mut()
+            .insert("authorization", header.parse().unwrap());
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{header:?}: {body}");
+    }
+    let started = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("127.0.0.1:0")
+        .with_auth(speechkit::Secret::new(""))
+        .start(std::future::pending())
+        .await;
+    let Err(SpeechError::InvalidInput(why)) = started else {
+        panic!("an empty token must be refused");
+    };
+    assert!(why.contains("token"), "{why}");
 }
 
 /// The `speechkit::cloud` client and this server speak the same protocol.
