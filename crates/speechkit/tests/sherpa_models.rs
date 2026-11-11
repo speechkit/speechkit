@@ -314,32 +314,34 @@ fn streaming_activity_lags_the_input_by_at_most_the_latency() {
 #[test]
 #[ignore = "needs models; run cargo xtask fetch-fixtures"]
 fn streaming_segments_end_within_the_audio() {
-    let (Some(engine), Some(dir)) = (streaming("streaming-en"), model_dir("streaming-en")) else {
-        return;
-    };
-    let audio = audio::read(dir.join("test_wavs/0.wav"), DecodeLimits::default()).unwrap();
     let mut late = Vec::new();
-    for tenths in 3..10 {
-        let cut = audio.samples.len() * tenths / 10;
-        let piece = AudioBuffer::new(audio.sample_rate, audio.samples[..cut].to_vec());
-        let duration = piece.duration();
-        let session = engine
-            .start(piece.sample_rate, AsrOptions::default(), secs(10))
-            .unwrap();
-        for chunk in piece.samples.chunks(1_600) {
-            session.push(chunk.to_vec(), secs(60)).unwrap();
-        }
-        let transcript = session.finish(secs(120)).unwrap();
-        for segment in &transcript.segments {
-            assert!(segment.start <= segment.end, "{segment:?}");
-            if segment.end > duration {
-                late.push((duration, segment.end));
+    for id in ["streaming-en", "streaming-bilingual", "streaming-zh"] {
+        let (Some(engine), Some(dir)) = (streaming(id), model_dir(id)) else {
+            continue;
+        };
+        let audio = audio::read(dir.join("test_wavs/0.wav"), DecodeLimits::default()).unwrap();
+        for tenths in 3..10 {
+            let cut = audio.samples.len() * tenths / 10;
+            let piece = AudioBuffer::new(audio.sample_rate, audio.samples[..cut].to_vec());
+            let duration = piece.duration();
+            let session = engine
+                .start(piece.sample_rate, AsrOptions::default(), secs(10))
+                .unwrap();
+            for chunk in piece.samples.chunks(1_600) {
+                session.push(chunk.to_vec(), secs(60)).unwrap();
+            }
+            let transcript = session.finish(secs(120)).unwrap();
+            for segment in &transcript.segments {
+                assert!(segment.start <= segment.end, "{id}: {segment:?}");
+                if segment.end > duration {
+                    late.push((id, duration, segment.end));
+                }
             }
         }
     }
     assert!(
         late.is_empty(),
-        "segments ending past the audio (audio, end): {late:?}"
+        "segments ending past the audio (model, audio, end): {late:?}"
     );
 }
 
