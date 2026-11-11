@@ -496,3 +496,31 @@ fn silence_after_the_audio_does_not_hold_it_back() {
     }
     assert_eq!(shared.played_index(), 160, "the audio has been heard");
 }
+
+/// `Speaker::stop` stops only what was queued before it: a sound queued
+/// right after it plays, even when both land while the player is between
+/// handling stops and taking its next sound.
+#[test]
+fn stop_spares_a_sound_queued_after_it() {
+    let (speaker, fake) = Speaker::fake(RATE);
+    // Start the player, and let it go idle.
+    let first = speaker.play(tone(0.1, 10)).unwrap();
+    play_filled(&fake, &speaker.shared, frames(10) as u64);
+    first.finish(Duration::from_secs(5)).unwrap();
+
+    let (at_tx, at_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    *lock(&speaker.shared.between) = Some(Box::new(move || {
+        let _ = at_tx.send(());
+        let _ = go_rx.recv();
+    }));
+    at_rx.recv().unwrap();
+    speaker.stop();
+    let after = speaker.play(tone(0.2, 100)).unwrap();
+    go_tx.send(()).unwrap();
+
+    let heard = play_filled(&fake, &speaker.shared, frames(100) as u64);
+    assert_eq!(heard, vec![0.2; frames(100)], "the later sound played");
+    after.finish(Duration::from_secs(5)).unwrap();
+    assert_eq!(after.played(), ms(100));
+}

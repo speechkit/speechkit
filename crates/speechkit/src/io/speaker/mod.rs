@@ -147,13 +147,21 @@ pub(crate) struct Shared {
     /// not spin.
     #[cfg(test)]
     loops: AtomicU64,
+    /// Run once by the player between handling stops and taking the next
+    /// sound, for the test of a stop that lands there.
+    #[cfg(test)]
+    between: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[derive(Default)]
 struct Queue {
     waiting: VecDeque<(Arc<PlaybackState>, Sound)>,
-    /// `Speaker::stop` was called: the player stops what it plays.
-    stop_all: bool,
+    /// How many sounds have been queued: the number the next one gets.
+    queued: u64,
+    /// `Speaker::stop` was called when this many sounds had been queued:
+    /// the player stops those it plays, but not a later one it may have
+    /// taken before seeing the stop.
+    stop_before: Option<u64>,
     /// The sink of the sound the player took last, so `Speaker::stop` can
     /// refuse its pushes at once. It may have ended already; ending it
     /// again does nothing.
@@ -177,6 +185,8 @@ impl Shared {
             changed: Condvar::new(),
             #[cfg(test)]
             loops: AtomicU64::new(0),
+            #[cfg(test)]
+            between: Mutex::new(None),
         }
     }
 
@@ -469,9 +479,10 @@ impl Speaker {
             return Err(lost_error());
         }
         self.start_stream()?;
-        let state = Arc::new(PlaybackState::new(sound.text()));
         let sink = sound.channel();
         let mut queue = lock(&self.shared.queue);
+        let state = Arc::new(PlaybackState::new(sound.text(), queue.queued));
+        queue.queued += 1;
         queue.waiting.push_back((state.clone(), sound));
         drop(queue);
         self.shared.changed.notify_all();
@@ -495,7 +506,8 @@ impl Speaker {
     }
 
     /// Stops what is playing and everything queued, and returns at once.
-    /// Their synthesis is cancelled, and their `finish` returns `Ok`.
+    /// Their synthesis is cancelled, and their `finish` returns `Ok`. A
+    /// sound queued after this call plays as usual.
     pub fn stop(&self) {
         let mut queue = lock(&self.shared.queue);
         for (state, sound) in queue.waiting.drain(..) {
@@ -505,7 +517,7 @@ impl Speaker {
         if let Some(sink) = queue.playing_sink.take() {
             sink.end();
         }
-        queue.stop_all = true;
+        queue.stop_before = Some(queue.queued);
         drop(queue);
         self.shared.changed.notify_all();
     }
@@ -651,14 +663,17 @@ struct Progress {
 
 pub(crate) struct PlaybackState {
     text: Option<PushedText>,
+    /// The order it was queued in, counting from 0.
+    number: u64,
     progress: Mutex<Progress>,
     changed: Condvar,
 }
 
 impl PlaybackState {
-    fn new(text: Option<PushedText>) -> Self {
+    fn new(text: Option<PushedText>, number: u64) -> Self {
         Self {
             text,
+            number,
             progress: Mutex::new(Progress {
                 start: None,
                 end: None,
@@ -900,6 +915,10 @@ impl Player {
                 return;
             }
             self.service();
+            #[cfg(test)]
+            if let Some(between) = lock(&self.shared.between).take() {
+                between();
+            }
             if self.current.is_none() {
                 self.next_sound();
             }
@@ -926,7 +945,7 @@ impl Player {
                     return;
                 }
                 // Nothing plays any more, so a stop has nothing to do.
-                queue.stop_all = false;
+                queue.stop_before = None;
                 if !queue.waiting.is_empty() {
                     break;
                 }
@@ -946,7 +965,7 @@ impl Player {
     fn wait(&self) {
         let queue = lock(&self.shared.queue);
         let work = self.current.is_none() && !queue.waiting.is_empty();
-        if !work && !queue.stop_all {
+        if !work && queue.stop_before.is_none() {
             let _ = self
                 .shared
                 .changed
@@ -957,20 +976,23 @@ impl Player {
 
     /// Handles stops, playbacks that have played out, skips, and underruns.
     fn service(&mut self) {
-        let stop_all = std::mem::take(&mut lock(&self.shared.queue).stop_all);
+        let stop_before = lock(&self.shared.queue).stop_before.take();
+        let stops = |state: &PlaybackState| {
+            state.is_stopped() || stop_before.is_some_and(|before| state.number < before)
+        };
         let played = self.shared.played_index();
-        if stop_all || self.current.as_ref().is_some_and(|c| c.state.is_stopped()) {
-            if let Some(current) = self.current.take() {
-                self.skip_rest(&current.state, played);
-                // Dropping the sound cancels synthesis and closes its sink.
-                drop(current.sound);
-                current.state.settle(Ok(()), Some(played));
-            }
+        if let Some(current) = self.current.take_if(|current| stops(&current.state)) {
+            self.skip_rest(&current.state, played);
+            // Dropping the sound cancels synthesis and closes its sink.
+            drop(current.sound);
+            current.state.settle(Ok(()), Some(played));
+            self.shared.expecting.store(false, Ordering::Relaxed);
+        } else if stop_before.is_some() && self.current.is_none() {
             self.shared.expecting.store(false, Ordering::Relaxed);
         }
         let mut tail = std::mem::take(&mut self.tail);
         tail.retain(|state| {
-            if stop_all || state.is_stopped() {
+            if stops(state) {
                 self.skip_rest(state, played);
                 state.settle(Ok(()), Some(played));
                 return false;
