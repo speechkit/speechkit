@@ -369,25 +369,32 @@ pub fn a03_late_events_after_a_failure_discarded() {
         .then(Trigger::AfterSamples(1), Step::Segment(0, "kept"))
         .then(Trigger::AfterSamples(1), Step::Fail(boom()))
         .then(Trigger::OnCancel, Step::Segment(1, "late"));
+    // The call blocks until the stream's own thread has reported the
+    // failure, which the test sees as pushes being refused.
+    let gate = Gate::new();
     let failing_between_calls = Script::new()
         .then(Trigger::AfterSamples(1), Step::Segment(0, "kept"))
         .then(
             Trigger::AfterSamples(1),
-            Step::FailLater(Duration::from_millis(10), boom()),
+            Step::FailLater(Duration::ZERO, boom()),
         )
-        // The failure arrives before the call returns.
         .then(
             Trigger::AfterSamples(1),
-            Step::Sleep(Duration::from_millis(200)),
+            Step::BlockUntilReleased(gate.clone()),
         )
         .then(Trigger::OnCancel, Step::Segment(1, "late"));
-    for script in [failing_call, failing_between_calls] {
+    for (script, gate) in [(failing_call, None), (failing_between_calls, Some(gate))] {
         let engine = engine(FakeAsr::new(script), AsrLimits::default());
         let session = engine
             .start(RATE, options(), Duration::from_secs(10))
             .expect("start");
         let mut updates = session.updates();
         session.push(tone(1_600), secs(10)).expect("push");
+        if let Some(gate) = gate {
+            assert!(gate.wait_entered(1, SETTLE));
+            assert!(eventually(SETTLE, || session.try_push(tone(1)).is_err()));
+            gate.release();
+        }
         let failure = session.finish(secs(10)).expect_err("the backend fails");
         assert!(failure.error.retryable(), "{:?}", failure.error);
         assert_eq!(failure.confirmed.text(), "kept");
