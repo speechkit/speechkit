@@ -128,9 +128,14 @@ impl Running {
             ..
         } = self;
         {
+            // The failure stays recorded until the result is settled, so
+            // the session counts as stopping while its stream is cancelled
+            // and dropped.
             let mut core = shared.lock();
-            if let Some(failure) = core.failure.take() {
-                error = Some(failure);
+            match (&core.failure, &error) {
+                (Some(failure), _) => error = Some(failure.clone()),
+                (None, Some(error)) => core.failure = Some(error.clone()),
+                (None, None) => {}
             }
         }
         // Stop a stream that failed or was ended from outside. Its late
@@ -145,6 +150,7 @@ impl Running {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(stream)));
         drop(slot);
         let mut core = shared.lock();
+        core.failure = None;
         match error {
             Some(error) => shared.settle_failure(&mut core, error),
             None if shared.terminal.get().is_none() => {
