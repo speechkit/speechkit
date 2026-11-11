@@ -61,6 +61,10 @@ What it does **not** do:
 
 Requests go only to the configured endpoints, over HTTPS or WSS with certificate checks (rustls and the Mozilla root store); plain `http://` and `ws://` are accepted so tests and local servers work, and should not be used across a network. Redirects are not followed, so a key is never sent to a host you did not name. Streamed HTTP transcription (server-sent events) publishes each partial immediately and retains only the latest accumulated text, with a total wire-byte limit. Buffered response bodies are size-limited, streamed audio is consumed as it arrives, and WebSocket messages are capped at 1 MiB.
 
+### Releases
+
+A release is built and published only from a tag whose commit passed CI, by a workflow whose actions are pinned to commits. Each GitHub release lists the SHA-256 of every binary archive in `SHA256SUMS`, and the archives carry signed build provenance: check one with `gh attestation verify <archive> --repo speechkit/speechkit`.
+
 ### Reviewing this model
 
 Revisit this model when an endpoint, a parser, or a new source of untrusted input is added, and add a fuzz target for any new parser.
