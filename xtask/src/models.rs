@@ -177,11 +177,26 @@ struct Hashing<R> {
     inner: R,
     hasher: Sha256,
     size: u64,
+    /// The size the manifest gives. Reading fails as soon as the stream
+    /// passes it, before the bytes reach the unpacker, so a bad mirror
+    /// cannot fill the disk.
+    limit: u64,
 }
 
 impl<R: Read> Read for Hashing<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let read = self.inner.read(buf)?;
+        // One byte more than the limit, so a stream that is too long is
+        // seen without reading on.
+        let room = usize::try_from(self.limit.saturating_sub(self.size).saturating_add(1))
+            .unwrap_or(usize::MAX);
+        let take = buf.len().min(room);
+        let read = self.inner.read(&mut buf[..take])?;
+        if self.size + read as u64 > self.limit {
+            return Err(io::Error::other(format!(
+                "the download is longer than the expected {} bytes",
+                self.limit
+            )));
+        }
         self.hasher.update(&buf[..read]);
         self.size += read as u64;
         Ok(read)
@@ -189,11 +204,12 @@ impl<R: Read> Read for Hashing<R> {
 }
 
 impl<R: Read> Hashing<R> {
-    fn new(inner: R) -> Self {
+    fn new(inner: R, limit: u64) -> Self {
         Self {
             inner,
             hasher: Sha256::new(),
             size: 0,
+            limit,
         }
     }
 
@@ -228,7 +244,7 @@ fn open(archive: &Archive) -> Result<Hashing<reqwest::blocking::Response>> {
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("{}: {e}", archive.url))?;
-    Ok(Hashing::new(response))
+    Ok(Hashing::new(response, archive.size))
 }
 
 /// Streams `archive` into `out` and checks its hash.
@@ -313,7 +329,9 @@ fn unpack(model: &Model, tar: impl Read, staging: &Path) -> Result {
 /// root: the archive's top-level directory for a tar, which is
 /// unpacked as it streams in, or the file itself for anything else.
 /// The hash is checked after the last byte, so a bad tar is unpacked
-/// before it is rejected; `fetch` then discards `staging`.
+/// before it is rejected; `fetch` then discards `staging`. The download
+/// fails as soon as it passes the manifest's size, but what that many
+/// compressed bytes unpack to is not bounded.
 fn fetch_archive(model: &Model, staging: &Path) -> Result<PathBuf> {
     let archive = &model.archive;
     let mut source = open(archive)?;
@@ -763,13 +781,28 @@ mod tests {
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
             size: 3,
         };
-        let mut reader = Hashing::new(&b"abc"[..]);
+        let mut reader = Hashing::new(&b"abc"[..], 3);
         let mut first = [0_u8; 1];
         reader.read_exact(&mut first).unwrap();
         // The unread rest still counts.
         reader.finish(&archive).unwrap();
-        assert!(Hashing::new(&b"abd"[..]).finish(&archive).is_err());
-        assert!(Hashing::new(&b"abcd"[..]).finish(&archive).is_err());
+        assert!(Hashing::new(&b"abd"[..], 3).finish(&archive).is_err());
+        assert!(Hashing::new(&b"abcd"[..], 3).finish(&archive).is_err());
+    }
+
+    /// A download longer than the manifest says fails as soon as it passes
+    /// the size, without handing on the bytes past it.
+    #[test]
+    fn hashing_stops_at_the_expected_size() {
+        let long = vec![7_u8; 1 << 20];
+        let mut reader = Hashing::new(&long[..], 4);
+        let mut out = Vec::new();
+        let error = io::copy(&mut reader, &mut out).unwrap_err();
+        assert!(error.to_string().contains("longer than"), "{error}");
+        assert!(out.len() <= 4, "{} bytes were handed on", out.len());
+        // A stream exactly as long as expected reads to its end.
+        let mut exact = Hashing::new(&long[..4], 4);
+        assert_eq!(io::copy(&mut exact, &mut io::sink()).unwrap(), 4);
     }
 
     #[test]
