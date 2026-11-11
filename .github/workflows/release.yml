@@ -1,12 +1,18 @@
 name: Release
 
 # Pushing a tag `vX.Y.Z` builds the CLI for each platform, publishes the
-# crates to crates.io, and creates a GitHub release with the binaries and
-# the changelog section. The tag must match the workspace version and
-# CHANGELOG.md must date that version; run `cargo xtask release-check`
-# before tagging, since it covers what this workflow does not (semver,
-# MSRV, and a recent models.yml run on the release commit itself, which
-# needs `gh workflow run models.yml --ref <branch>` after pushing it).
+# crates to crates.io, and creates a GitHub release with the binaries, a
+# SHA256SUMS file, and the changelog section. The binaries get signed
+# build provenance (`gh attestation verify <file> --repo <owner>/<repo>`).
+# The tag must match the workspace version, CHANGELOG.md must date that
+# version, and ci.yml must have passed on the tagged commit; run `cargo
+# xtask release-check` before tagging, since it covers what this workflow
+# does not (semver, MSRV, and a recent models.yml run on the release
+# commit itself, which needs `gh workflow run models.yml --ref <branch>`
+# after pushing it).
+#
+# Every action is pinned to a commit, since these jobs can publish and
+# write releases; Dependabot bumps the pins.
 
 on:
   push:
@@ -25,10 +31,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # the ci.yml runs of the tagged commit
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: version
         name: Check the tag against the manifest and changelog
         shell: bash
@@ -45,6 +54,29 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check that CI passed on the tagged commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The push to master runs ci.yml; a tag pushed right after it
+          # waits for that run. ci.yml skips commits that change only
+          # Markdown, so dispatch it on the tag for those.
+          for _ in $(seq 60); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" \
+              --jq '.workflow_runs[] | "\(.status) \(.conclusion)"')
+            if grep -qx "completed success" <<<"$runs"; then
+              echo "ci.yml passed on $GITHUB_SHA"
+              exit 0
+            fi
+            if ! grep -Eq "^(queued|in_progress|waiting|requested|pending) " <<<"$runs"; then
+              echo "::error::ci.yml has not passed on $GITHUB_SHA; run \`gh workflow run ci.yml --ref $GITHUB_REF_NAME\`, then rerun this workflow"
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "::error::ci.yml did not finish on $GITHUB_SHA within an hour"
+          exit 1
 
   # sherpa-onnx links statically on these targets, so the archives need
   # no other files. They hold only `speechkit`: `speechkit-worker` serves
@@ -64,8 +96,10 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
       - run: rustup target add ${{ matrix.target }}
         shell: bash
       - uses: ./.github/actions/native
@@ -89,7 +123,7 @@ jobs:
             cp "$dir/speechkit" "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
           path: |
@@ -109,14 +143,16 @@ jobs:
     env:
       HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
       - uses: ./.github/actions/native
       # Trusted publishing, unless a CARGO_REGISTRY_TOKEN secret is set:
       # a crate's first version cannot use trusted publishing.
       - id: auth
         if: env.HAS_TOKEN != 'true'
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
       - name: Publish
         shell: bash
         env:
@@ -134,17 +170,38 @@ jobs:
             fi
           done
 
+  # Signs build provenance for the binaries. Its own job, so the job that
+  # can mint an OIDC token cannot also write the release.
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
   release:
-    needs: [check, build, publish]
+    needs: [check, build, publish, attest]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
+      - name: Write the checksums
+        shell: bash
+        run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
       - name: Create the GitHub release
         shell: bash
         env:
