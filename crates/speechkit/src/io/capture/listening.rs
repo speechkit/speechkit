@@ -268,14 +268,17 @@ impl Listening {
         self.session.updates()
     }
 
-    /// Ends the input at the capture's position, and returns at once, so it
-    /// can run on a UI thread when a key goes up (D-04). The listening's
-    /// thread then pushes the audio up to there and closes the session's
+    /// Ends the input after the audio the microphone has delivered so far,
+    /// including audio the capture thread has not moved yet, and returns at
+    /// once, so it can run on a UI thread when a key goes up (D-04). The
+    /// listening's thread then pushes the audio up to there and closes the
+    /// session's
     /// input, and the session goes on to process what it heard. If this
     /// was the capture's only user, the microphone stops. Calling it again
     /// does nothing.
     pub fn stop(&self) {
-        self.state.timeline().stop_reader(self.state.reader);
+        let at = self.state.device.delivered();
+        self.state.timeline().stop_reader(self.state.reader, at);
         self.state.release();
     }
 

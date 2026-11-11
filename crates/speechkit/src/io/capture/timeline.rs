@@ -41,11 +41,9 @@ pub(crate) enum Read {
 enum Stop {
     /// It reads until the capture ends.
     Never,
-    /// At the capture's position when the capture thread next runs, so it
-    /// includes the audio the device has delivered but the thread has not
-    /// moved yet.
-    Requested,
-    /// At this position.
+    /// At this position. A stop may be ahead of the timeline's end: it
+    /// includes the audio the device delivered but the capture thread has
+    /// not moved yet.
     At(u64),
 }
 
@@ -97,12 +95,14 @@ impl State {
         self.next_id
     }
 
-    /// Where `reader` stops, once that is known.
+    /// Where `reader` stops, once that is known. Once the timeline has
+    /// ended, no reader reads past its end.
     fn stop_of(&self, reader: &Reader) -> Option<u64> {
         match reader.stop {
+            Stop::At(at) if self.ended => Some(at.min(self.end())),
             Stop::At(at) => Some(at),
-            _ if self.ended => Some(self.end()),
-            _ => None,
+            Stop::Never if self.ended => Some(self.end()),
+            Stop::Never => None,
         }
     }
 
@@ -118,17 +118,14 @@ impl State {
                 .is_some_and(|stop| reader.cursor >= stop)
     }
 
-    /// Resolves requested stops, marks readers that fell too far behind,
-    /// lapses old reservations, and frees audio nothing needs.
+    /// Marks readers that fell too far behind, lapses old reservations,
+    /// and frees audio nothing needs.
     fn maintain(&mut self) {
         let end = self.end();
         for reader in self.readers.values_mut() {
-            if reader.stop == Stop::Requested {
-                reader.stop = Stop::At(end);
-            }
             let upto = match reader.stop {
                 Stop::At(at) => at.min(end),
-                _ => end,
+                Stop::Never => end,
             };
             if !reader.lost && upto.saturating_sub(reader.cursor) > reader.limit {
                 reader.lost = true;
@@ -174,13 +171,14 @@ impl State {
     /// across the gap, so it is lost (D-02); nothing can start before it
     /// (D-01), and a reservation before it lapses.
     fn lose(&mut self, at: u64) {
-        // A stop requested before the loss ends where the timeline ends now.
-        self.maintain();
         self.floor = self.floor.max(at);
         for reader in self.readers.values_mut() {
+            // A stop counts the samples the device had delivered, which
+            // lost samples never add to, so one taken before the loss is
+            // at or before it.
             let crosses = match reader.stop {
                 Stop::At(stop) => stop > at,
-                _ => true,
+                Stop::Never => true,
             };
             if reader.start < at && crosses {
                 reader.lost = true;
@@ -372,12 +370,14 @@ impl Timeline {
         if reader.lost {
             return Read::Lost(reader.cursor);
         }
+        if stop.is_some_and(|stop| reader.cursor >= stop) {
+            return Read::End(reader.cursor);
+        }
+        // A stop ahead of the end waits for the capture thread to move the
+        // audio up to it.
         let upto = stop.map_or(end, |stop| stop.min(end));
         if reader.cursor >= upto {
-            return match stop {
-                Some(_) => Read::End(reader.cursor),
-                None => Read::Idle,
-            };
+            return Read::Idle;
         }
         let take = usize::try_from(upto - reader.cursor)
             .unwrap_or(usize::MAX)
@@ -398,20 +398,15 @@ impl Timeline {
         Read::Audio(audio)
     }
 
-    /// Stops reader `id` at the capture's position as of the capture
-    /// thread's next run.
-    pub(crate) fn stop_reader(&self, id: u64) {
+    /// Stops reader `id` at position `at`: the samples the device has
+    /// delivered so far, which may be ahead of what the capture thread has
+    /// moved. Only the first stop counts.
+    pub(crate) fn stop_reader(&self, id: u64, at: u64) {
         let mut state = self.lock();
-        let end = state.end();
-        let ended = state.ended;
         if let Some(reader) = state.readers.get_mut(&id)
             && reader.stop == Stop::Never
         {
-            reader.stop = if ended {
-                Stop::At(end)
-            } else {
-                Stop::Requested
-            };
+            reader.stop = Stop::At(at.max(reader.cursor));
         }
         drop(state);
         self.changed.notify_all();

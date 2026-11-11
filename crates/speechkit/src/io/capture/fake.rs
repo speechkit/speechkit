@@ -63,9 +63,10 @@ impl FakeMicrophone {
 
     /// Delivers `samples` in one device callback, without waiting for room
     /// in the ring buffer, as a device does while the capture thread has
-    /// fallen behind: what does not fit is lost. Send more than the two
-    /// seconds the buffer holds, so that some of it is lost however the
-    /// capture thread is scheduled.
+    /// fallen behind: what does not fit is lost. The room is taken once, at
+    /// the start, so samples past it are lost however the capture thread
+    /// is scheduled: sending more than the two seconds the buffer holds
+    /// always loses some.
     pub fn push_burst(&self, samples: &[f32]) {
         let mut current = lock(&self.inner.current);
         let Some((device, producer)) = current.as_mut() else {
@@ -77,7 +78,10 @@ impl FakeMicrophone {
         if device.stopping.load(Ordering::Acquire) || device.device_lost() {
             return;
         }
-        device.input(samples, 1, producer);
+        // The capture thread only empties the ring, so all of this room is
+        // still free while the samples go in.
+        let room = producer.vacant_len();
+        device.input_within(samples, 1, producer, room);
     }
 
     /// Loses the device, as a callback reporting an error would.
