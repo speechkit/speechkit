@@ -74,7 +74,11 @@ pub(crate) async fn require_auth(
         .and_then(|value| value.to_str().ok())
         .and_then(bearer_token);
     match presented {
-        Some(presented) if constant_time_eq(presented.as_bytes(), token.expose().as_bytes()) => {
+        // An empty token lets nobody in; `start` refuses it outright.
+        Some(presented)
+            if !token.expose().is_empty()
+                && constant_time_eq(presented.as_bytes(), token.expose().as_bytes()) =>
+        {
             next.run(request).await
         }
         _ => respond(StatusCode::UNAUTHORIZED, "missing or invalid bearer token"),

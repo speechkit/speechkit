@@ -109,7 +109,8 @@ impl Server {
 
     /// Requires `Authorization: Bearer <token>` on the `/v1/` routes; `/health`
     /// stays open. The token is a [`Secret`], or an `Arc<Secret>` shared with
-    /// other code.
+    /// other code. It must not be empty: [`start`](Self::start) refuses an
+    /// empty one, and [`router`](Self::router) lets nobody in with it.
     #[must_use]
     pub fn with_auth(mut self, token: impl Into<Arc<Secret>>) -> Self {
         self.auth = Some(token.into());
