@@ -280,11 +280,14 @@ impl Stream {
         let text = result.text.trim().to_owned();
         let fed = at(self.fed);
         let base = result.start_time.unwrap_or(0.0);
+        // A token decoded from the padding `finish` adds is dated past the
+        // input; it is clamped to the input's end.
+        let token = |offset: f32| seconds(base + offset).min(fed);
         let tokens = match &result.timestamps {
             Some(timestamps) if !timestamps.is_empty() => timestamps
                 .first()
                 .zip(timestamps.last())
-                .map(|(first, last)| (seconds(base + first), seconds(base + last))),
+                .map(|(&first, &last)| (token(first), token(last))),
             // Text without timestamps: date it as late as it can be.
             _ if !text.is_empty() => {
                 let late = fed.saturating_sub(LATENCY).max(self.start);
