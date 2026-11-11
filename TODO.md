@@ -109,7 +109,7 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 
 ### Phase 3 findings
 
-Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8, 9, 11 and 12 are fixed, and item 10 does not reproduce. Items 13, 14 and 15 are not done yet, and each needs its test first, as in Phase 2.
+Found on 2026-11-11 by reading the areas Phase 3 lists. All are done: items 8, 9 and 11 to 15 are fixed, and item 10 does not reproduce.
 
 ### 8. `Playback::played` counts audio before it is heard (Confirmed; fixed in 2ef4b3a)
 
@@ -153,28 +153,39 @@ Fixed as proposed: sounds are numbered as they are queued, and `stop` records ho
 
 Reproduced against streaming-en (already on this machine) by `streaming_segments_end_within_the_audio`, which cuts `test_wavs/0.wav` at each tenth from 30% to 90%. Every cut gave a segment ending past the audio, by up to 530 ms. Token times are now clamped to the samples fed, and the test passes, as do the streaming goldens and the ASR contract on the model. Not run on streaming-bilingual or streaming-zh, which are not on this machine; the nightly `models.yml` run covers them.
 
-### 13. The release workflow trusts the tag (Read)
+### 13. The release workflow trusts the tag (Read; fixed in 4e83c48)
 
-- [ ] Decide which of these to adopt.
+- [x] Decide which of these to adopt: all three.
 
 `release.yml` publishes to crates.io on any `v*` tag that matches the manifest and the changelog. Nothing checks that CI passed on the tagged commit; `cargo xtask release-check` covers part of it, but only if someone runs it first. The actions are pinned by tag (`@v4`, `@v1`, `@stable`), not by commit, in jobs that hold `id-token: write` and `contents: write`. The release attaches binaries without checksums or provenance.
 
 Options: a job that checks the `ci.yml` run for the tagged commit; actions pinned to commit SHAs (with Dependabot to bump them); a `SHA256SUMS` file, or `actions/attest-build-provenance`.
 
-### 14. `xtask` unpacks a download before it knows its size is right (Read; minor)
+Adopted all three:
+- The `check` job waits up to an hour for `ci.yml` on the tagged commit and fails unless a run passed. The query was tried against `origin/master`.
+- Every action in `release.yml` is pinned to the commit its tag pointed to on 2026-11-11, and `.github/dependabot.yml` bumps them weekly.
+- The release gets `SHA256SUMS`, and a separate `attest` job signs provenance with `actions/attest`, which upstream now recommends over `attest-build-provenance`. SECURITY.md says how to verify.
 
-- [ ] Stop reading past the manifest's size.
+Not run: nothing here runs until the next tag. Check the first release, especially the attest job and the CI wait. `dtolnay/rust-toolchain` is pinned to a commit of its `stable` branch, which has no version tags, so Dependabot may not bump that pin. The other workflows still pin by tag; they hold no publishing rights.
+
+### 14. `xtask` unpacks a download before it knows its size is right (Confirmed; fixed in 4548544)
+
+- [x] Stop reading past the manifest's size.
 
 `fetch_archive` (`xtask/src/models.rs:317`) checks the archive's size and hash only after the last byte, as documented. Members cannot escape the staging directory (`unpack_in`). But a bad mirror or a compression bomb can write any amount to disk first. Fail the `Hashing` reader as soon as it passes `archive.size`; the hash check stays at the end.
 
-### 15. More checks that assume a fast machine (Read)
+Fixed as proposed; `hashing_stops_at_the_expected_size` fails with the limit disabled. This stops a mirror sending too much. A compression bomb no larger than the expected size is still unpacked in full before its hash is checked; the doc comment says so. Bounding that would need the unpacked size in the manifest.
 
-- [ ] Watch these in the nightly repeats, with the two Phase 1 named.
+### 15. More checks that assume a fast machine (Read; fixed in 399e140)
+
+- [x] Make both robust, rather than only watching them.
 
 - `t02_finish_waits_for_the_reader` (`speechkit-testkit/src/contract/tts/faults.rs:73`) expects audio to have been synthesized within a 200 ms `finish`.
 - The device checks use `AT_ONCE` (100 ms) as an upper bound for `stop` and for a cancelled finish (`contract/devices.rs:403`, `:436`).
 
 The other sleeps in the testkit are followed by upper bounds or "nothing happened" checks.
+
+Fixed: `t02` now waits until audio is queued before calling `finish`. `AT_ONCE` is 500 ms, and the busy detector in D-04 takes 1 s, so a `stop` that waits for it still fails. Neither had failed on this machine, so there was no failure to reproduce. With every core busy, both passed 20 runs each. The two checks Phase 1 named are still only watched.
 
 ### Read, nothing found
 
