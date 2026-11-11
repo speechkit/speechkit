@@ -311,6 +311,12 @@ impl Device {
         self.rate.duration_of(self.timeline.position())
     }
 
+    /// The timeline position after every sample the device has delivered
+    /// so far, including those the capture thread has not moved yet.
+    fn delivered(&self) -> u64 {
+        self.queued.load(Ordering::Acquire)
+    }
+
     /// Takes what a device callback delivered: converts it to mono, queues
     /// it, and measures its level. What does not fit in the queue is lost,
     /// and where is recorded, for the timeline. Only arithmetic, atomics,
@@ -321,13 +327,29 @@ impl Device {
         channels: usize,
         producer: &mut impl Producer<Item = f32>,
     ) {
+        self.input_within(data, channels, producer, usize::MAX);
+    }
+
+    /// [`input`](Self::input), queueing at most `room` samples: the rest
+    /// are lost as if the queue were full. The fake microphone passes the
+    /// room it saw, so what is lost does not depend on how far the capture
+    /// thread drains the queue during the call.
+    fn input_within<T: DeviceSample>(
+        &self,
+        data: &[T],
+        channels: usize,
+        producer: &mut impl Producer<Item = f32>,
+        room: usize,
+    ) {
         let (mut dropped, mut squares, mut count) = (0_u64, 0.0_f32, 0.0_f32);
         let mut queued = self.queued.load(Ordering::Relaxed);
+        let mut taken = 0_usize;
         let mut losing = false;
         mixdown(data, channels, |sample| {
             squares += sample * sample;
             count += 1.0;
-            if producer.try_push(sample).is_ok() {
+            if taken < room && producer.try_push(sample).is_ok() {
+                taken += 1;
                 queued += 1;
                 losing = false;
             } else {
@@ -350,7 +372,9 @@ impl Device {
             let rms = (squares / count).sqrt();
             self.level.store(rms.to_bits(), Ordering::Relaxed);
         }
-        self.queued.store(queued, Ordering::Relaxed);
+        // Release pairs with the Acquire load in `delivered`, so a stop
+        // that follows this callback counts its samples.
+        self.queued.store(queued, Ordering::Release);
         if dropped > 0 {
             self.dropped.fetch_add(dropped, Ordering::Relaxed);
         }
