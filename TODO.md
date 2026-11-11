@@ -109,7 +109,7 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 
 ### Phase 3 findings
 
-Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8, 9, 11 and 12 are fixed; items 10, 13, 14 and 15 are not yet, and each needs its test first, as in Phase 2.
+Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8, 9, 11 and 12 are fixed, and item 10 does not reproduce. Items 13, 14 and 15 are not done yet, and each needs its test first, as in Phase 2.
 
 ### 8. `Playback::played` counts audio before it is heard (Confirmed; fixed in 2ef4b3a)
 
@@ -129,18 +129,13 @@ Fixed: the callback now records the index after the last sample it took and when
 
 Reproduced by `dropping_a_stalled_connection_is_bounded` in `cloud/ws.rs`: a local server accepts and never reads, the client sends until a send times out, and the drop was still blocked after 5 s. The close frame and the close now share one `CLOSE_WAIT` bound, and the drop returns in about 1 s.
 
-### 10. Keyword spotting after a pause may report wrong times, or miss a repeat (Read; needs a model)
+### 10. Keyword spotting after a pause may report wrong times, or miss a repeat (Does not reproduce; dropped)
 
-- [ ] Check a keyword, then 3 s of silence, then the keyword again, against the kws-en model.
+- [x] Check a keyword, then a pause, then the keyword again, against the kws-en model.
 
-`Detector::decode` (`crates/speechkit/src/sherpa/kws/mod.rs:473`) never resets the stream. It relies on two things: sherpa-onnx's decoder restarting after a match, and `GetKeywordResult(true)` dropping a result that overlaps the last one. Upstream source (sherpa-onnx master, read 2026-11-11) confirms both. But `KeywordSpotterTransducerImpl::DecodeStreams` also resets the stream by itself after 1.5 s of trailing blanks. That reset re-initializes the decoder result, which probably restarts token timestamps. It does not clear `prev_keyword_result_`, which the duplicate check compares against. So after a pause:
+`Detector::decode` (`crates/speechkit/src/sherpa/kws/mod.rs:473`) never resets the stream. It relies on two things: sherpa-onnx's decoder restarting after a match, and `GetKeywordResult(true)` dropping a result that overlaps the last one. Upstream source (sherpa-onnx master, read 2026-11-11) confirms both. But `KeywordSpotterTransducerImpl::DecodeStreams` also resets the stream by itself after 1.5 s of trailing blanks, and that reset re-initializes the decoder result. Reading the source, it looked like this could restart token times, so a later detection would be dated from the reset or dropped as a duplicate of the last one.
 
-- a new detection may be dated from the reset, not from the start of the stream;
-- or a genuine second keyword may be dropped as a "duplicate", because its first timestamp is below the previous keyword's last one.
-
-This is inferred from the source, not run: no model is on this machine. `a_repeated_keyword_is_spotted_each_time` concatenates one clip three times, and may not hold a 1.5 s pause. Upstream's own examples call `reset` after every detection.
-
-Fix, if it reproduces: reset after each detection, add the samples fed before the reset to the token times, and drop the comment's claim that token times always count from the start of the stream.
+Run on 2026-11-11 against kws-en and kws-zh-en. The review wrongly said no model was on this machine: they were in `~/.cache/speechkit/models`, just not named in `SPEECHKIT_MODEL_*`. `a_keyword_after_a_pause_is_spotted_and_dated` (`tests/sherpa_kws.rs`) plays a clip, then 0.5, 2, 3 or 5 s of silence, then the clip again. Each clip already holds over 3 s of silence after its keyword, so the reset happens in every case. Both detections are found every time, and the second is dated one clip (6.625 s) plus the pause after the first, to within 45 ms. So token times stay measured from the start of the stream across sherpa-onnx's own reset, and nothing is dropped. No code change; the test stays, and nightly runs it. The comment's other claim, that an explicit `reset` would restart the times, is still unchecked, and it is moot while the spotter never calls one.
 
 ### 11. A sound queued just after `Speaker::stop` can be stopped by it (Confirmed; fixed in eec1603)
 
