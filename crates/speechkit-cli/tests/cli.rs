@@ -99,6 +99,34 @@ fn the_longest_timeout_means_no_limit() {
     }
 }
 
+/// A timeout says so: the session fails with `DeadlineExceeded`, not as if
+/// the user had cancelled it.
+#[test]
+fn a_timeout_is_reported_as_one() {
+    let (_dir, file) = wav_file(1);
+    for command in ["transcribe", "stream"] {
+        let gate = Gate::new();
+        let stuck = FakeAsr::new(
+            Script::new().then(Trigger::OnFinish, Step::BlockUntilReleased(gate.clone())),
+        );
+        let (code, stdout, stderr) = call(
+            &[command, file.to_str().unwrap(), "--timeout", "1"],
+            &Fake(stuck),
+        );
+        gate.release();
+        assert_eq!(
+            code,
+            ExitCode::from(speechkit_cli::EXIT_BACKEND),
+            "{stderr}"
+        );
+        assert_eq!(stdout, "", "{command}");
+        assert!(
+            stderr.contains("error: deadline exceeded"),
+            "{command}: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn transcribe_respects_a_small_max_chunk() {
     let (_dir, file) = wav_file(1);
