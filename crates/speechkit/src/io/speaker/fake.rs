@@ -34,14 +34,25 @@ impl FakeSpeaker {
     /// been heard, and returns it, with silence where the speaker had
     /// nothing to play.
     pub fn play(&self, duration: Duration) -> Vec<f32> {
+        // Its playback time is `duration` ago, so all of it counts as
+        // played.
+        self.render(duration, Duration::ZERO, duration)
+    }
+
+    /// Plays `duration` of audio as one device callback whose first sample
+    /// will be heard `latency` from now, as a device with that output
+    /// latency would, and returns it.
+    pub fn play_ahead(&self, duration: Duration, latency: Duration) -> Vec<f32> {
+        self.render(duration, latency, Duration::ZERO)
+    }
+
+    fn render(&self, duration: Duration, latency: Duration, ago: Duration) -> Vec<f32> {
         let frames = usize::try_from(self.shared.rate.frames_in(duration)).unwrap_or(usize::MAX);
         let mut out = vec![0.0_f32; frames];
         let mut consumer = lock(&self.consumer);
         let mut skips = lock(&self.skips);
-        // Its playback time is `duration` ago, so all of it counts as
-        // played.
         self.shared
-            .render_played(&mut *consumer, &mut out, duration, &mut skips);
+            .render(&mut *consumer, &mut out, 1, latency, ago, &mut skips);
         out
     }
 

@@ -594,7 +594,8 @@ fn play_checking(
 }
 
 /// D-06: `played()` and `text_played()` never exceed what the device has
-/// played, and stay put once the playback is stopped.
+/// played, audio that has reached its playback time rather than audio the
+/// device has taken, and stay put once the playback is stopped.
 pub fn d06_played_bounded() {
     let text = "One two. Three four five. Six seven.";
     let (speaker, fake) = Speaker::fake(RATE);
@@ -638,4 +639,66 @@ pub fn d06_played_bounded() {
     );
     assert_eq!(playback.text_played(), said);
     playback.finish(SETTLE).expect("stopping is not an error");
+
+    played_waits_for_the_latency(&engine);
+}
+
+/// D-06 on a device whose output latency is longer than a buffer: audio
+/// counts as played only once its playback time has come, not when the
+/// device takes it.
+fn played_waits_for_the_latency(engine: &TtsEngine) {
+    let text = "One two. Three.";
+    let latency = Duration::from_millis(100);
+    let buffer = Duration::from_millis(10);
+    let (speaker, fake) = Speaker::fake(RATE);
+    let playback = speaker
+        .speak(engine, text, TtsOptions::default())
+        .expect("speak");
+    // When each buffer's first sample is heard, and how many samples of
+    // the playback it holds.
+    let mut buffers: Vec<(Instant, usize)> = Vec::new();
+    let first = samples_for("One two.");
+    let started = Instant::now();
+    let mut next = started;
+    let mut free = started;
+    while !playback.is_done() {
+        assert!(started.elapsed() < SETTLE, "the playback did not progress");
+        // A device plays a buffer only once the one before it has played.
+        // Taken before the callback, so the bound errs on the side of more.
+        let now = Instant::now();
+        let at = free.max(now + latency);
+        free = at + buffer;
+        let mut heard = Heard::new();
+        heard.add(&fake.play_ahead(buffer, at - now));
+        buffers.push((at, heard.total));
+
+        let played = playback.played();
+        let said = playback.text_played();
+        let now = Instant::now();
+        let reached: usize = buffers
+            .iter()
+            .map(|&(at, len)| {
+                let ago = now.saturating_duration_since(at);
+                usize::try_from(RATE.frames_in(ago)).map_or(len, |frames| frames.min(len))
+            })
+            .sum();
+        assert!(
+            played <= RATE.duration_of(reached as u64),
+            "played() says {played:?}, but only {reached} samples reached their playback time"
+        );
+        if reached < first {
+            assert_eq!(said, "", "text_played() ran ahead of the device");
+        }
+        // Asked for buffers no faster than they play, as a device asks.
+        next += buffer;
+        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+    }
+    assert!(
+        started.elapsed() >= latency,
+        "the playback ended before any of it was heard"
+    );
+    playback.finish(SETTLE).expect("played to the end");
+    assert_eq!(playback.text_played(), text);
+    let total: usize = buffers.iter().map(|&(_, len)| len).sum();
+    assert_eq!(playback.played(), RATE.duration_of(total as u64));
 }
