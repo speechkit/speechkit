@@ -38,6 +38,27 @@ const MARKER: &str = "SPEECHKIT_FAKE_WORKER_MARKER";
 /// handshake, as a native model load that never returns would.
 const STALL: &str = "SPEECHKIT_FAKE_WORKER_STALL";
 
+/// A file whose existence makes a running fake worker stop reading its
+/// requests, as a frozen process would.
+const DEAF: &str = "SPEECHKIT_FAKE_WORKER_DEAF";
+
+/// Stdin, until the file at `flag` exists: then every read blocks.
+struct Deaf<R> {
+    inner: R,
+    flag: Option<PathBuf>,
+}
+
+impl<R: std::io::Read> std::io::Read for Deaf<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.flag.as_ref().is_some_and(|flag| flag.exists()) {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+        self.inner.read(buf)
+    }
+}
+
 /// A backend whose streams follow their session's hints:
 ///
 /// - `abort`: abort the worker at 3 200 samples, unless the marker file
@@ -172,7 +193,11 @@ fn worker_entry() {
         caps,
         marker: PathBuf::from(marker),
     };
-    let _ = serve(&backend, std::io::stdin().lock(), std::io::stdout());
+    let input = Deaf {
+        inner: std::io::stdin().lock(),
+        flag: std::env::var_os(DEAF).map(PathBuf::from),
+    };
+    let _ = serve(&backend, input, std::io::stdout());
     // Leave before the test harness prints its summary on stdout.
     std::process::exit(0);
 }
@@ -195,6 +220,7 @@ fn command(dir: &tempfile::TempDir) -> WorkerCommand {
         .arg("--test-threads=1")
         .env(MARKER, dir.path().join("marker"))
         .env(STALL, dir.path().join("stall"))
+        .env(DEAF, dir.path().join("deaf"))
 }
 
 fn backend() -> (IsolatedAsr, tempfile::TempDir) {
@@ -269,6 +295,38 @@ fn idle_workers_are_reused_and_busy_ones_are_not() {
     let b = engine.start(RATE, hints(&[]), secs(60)).unwrap();
     let (a, b) = (a.finish(secs(10)).unwrap(), b.finish(secs(10)).unwrap());
     assert_ne!(a.text(), b.text(), "concurrent sessions on two workers");
+}
+
+/// A request to a worker that stopped reading fails within the call
+/// timeout, even when it is larger than the pipe can hold, and the worker
+/// is killed: the write does not block the session forever.
+#[test]
+fn a_request_to_a_worker_that_stopped_reading_times_out() {
+    let (backend, dir) = backend();
+    let engine = AsrEngine::new(backend.with_call_timeout(Duration::from_millis(500)));
+    // Start the worker, and leave it idle in the pool.
+    assert!(run(&engine, &[]).unwrap().starts_with("pid"));
+    std::fs::write(dir.path().join("deaf"), "").unwrap();
+    // Far more than a pipe holds: the worker's read stops partway.
+    let phrase = "x".repeat(4_000);
+    let (done, finished) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    std::thread::spawn(move || {
+        let many = vec![phrase.as_str(); 100];
+        let _ = done.send(run(&engine, &many).map(|_| engine));
+    });
+    let outcome = finished
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the session blocked on the request");
+    let Err(error) = outcome else {
+        panic!("the session succeeded on a worker that stopped reading");
+    };
+    assert_retryable(&error);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
