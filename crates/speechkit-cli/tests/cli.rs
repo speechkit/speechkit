@@ -280,6 +280,40 @@ fn serve_answers_health_on_port_zero() {
     assert!(!stderr.contains("warning"), "{stderr}");
 }
 
+/// A host name binds as its addresses do, and `localhost` is local.
+#[test]
+fn serve_binds_a_host_name() {
+    let mut stderr = Vec::new();
+    let handle = serve(
+        &serve_args("localhost:0", None),
+        &Fake(FakeAsr::hello_world()),
+        &mut stderr,
+    )
+    .unwrap();
+    assert!(handle.local_addr().ip().is_loopback());
+    let response = get(handle.local_addr(), "/health");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    handle.shutdown().unwrap();
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(!stderr.contains("warning"), "{stderr}");
+}
+
+/// A bind address that does not resolve is a usage error, found before
+/// the backend is built: loading a model first would make the user wait
+/// for nothing.
+#[test]
+fn serve_checks_the_bind_address_first() {
+    let mut stderr = Vec::new();
+    // No unknown host name: some resolvers, such as a proxy's, answer
+    // every name, so only addresses that fail before any lookup are used.
+    for bind in ["localhost", "127.0.0.1:port"] {
+        let result = serve(&serve_args(bind, None), &Broken, &mut stderr);
+        let error = result.err().unwrap();
+        assert_eq!(error.code, 2, "{bind}: {}", error.message);
+        assert!(error.message.contains(bind), "{}", error.message);
+    }
+}
+
 #[test]
 fn serve_warns_without_auth_off_loopback() {
     let mut stderr = Vec::new();
