@@ -426,8 +426,18 @@ mod tests {
 
     proptest! {
         #[test]
-        fn round_trip_within_one_step(samples in prop::collection::vec(-1.0_f32..=1.0, 0..2_000)) {
-            let original = buffer(samples);
+        fn round_trip_within_one_step(
+            samples in prop::collection::vec(-1.0_f32..=1.0, 0..2_000),
+            rate in prop::sample::select(vec![
+                SampleRate::HZ_8000,
+                SampleRate::HZ_16000,
+                SampleRate::HZ_22050,
+                SampleRate::HZ_24000,
+                SampleRate::HZ_44100,
+                SampleRate::HZ_48000,
+            ]),
+        ) {
+            let original = AudioBuffer::new(rate, samples);
             let decoded = decode(&encode_wav(&original).unwrap(), DecodeLimits::default()).unwrap();
             prop_assert_eq!(decoded.sample_rate, original.sample_rate);
             prop_assert_eq!(decoded.samples.len(), original.samples.len());
