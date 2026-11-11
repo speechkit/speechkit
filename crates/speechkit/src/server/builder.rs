@@ -29,6 +29,7 @@ pub struct Server {
     pub(crate) max_speech_chars: usize,
     pub(crate) auth: Option<Arc<Secret>>,
     pub(crate) shutdown_timeout: Duration,
+    pub(crate) write_timeout: Duration,
 }
 
 impl Default for Server {
@@ -45,6 +46,7 @@ impl Default for Server {
             max_speech_chars: 4096,
             auth: None,
             shutdown_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -128,6 +130,18 @@ impl Server {
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
+        self
+    }
+
+    /// How long a response may wait for the client to take more of it.
+    /// A connection whose writes make no progress for this long is closed,
+    /// which ends its request as a disconnect does and frees its session
+    /// slot. Without it, a client that stops reading would hold a slot for
+    /// as long as it kept its connection open. A slow client that keeps
+    /// reading is not affected. Default: 30 s.
+    #[must_use]
+    pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
         self
     }
 
