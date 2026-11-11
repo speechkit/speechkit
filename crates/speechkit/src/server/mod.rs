@@ -1,6 +1,7 @@
 #![doc = include_str!("README.md")]
 
 mod builder;
+mod deadline;
 mod delta;
 mod error;
 mod speech;
@@ -48,8 +49,9 @@ impl Server {
             .route("/health", get(health))
             .merge(v1)
             .layer(DefaultBodyLimit::max(max_body_bytes))
-            .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(
+            .layer(axum::middleware::from_fn_with_state(
                 body_timeout,
+                deadline::limit,
             ))
             .with_state(shared)
     }
