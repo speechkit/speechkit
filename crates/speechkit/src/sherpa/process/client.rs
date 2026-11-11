@@ -28,6 +28,9 @@ const NAME: &str = "speechkit-worker";
 /// How long one request may take by default before the worker is taken
 /// as hung and killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a worker may take by default to load its model and send its
+/// handshake before it is taken as hung and killed.
+const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a worker may still take to answer once its session has
 /// stopped, such as after a cancel.
 const STOPPED_GRACE: Duration = Duration::from_secs(2);
@@ -44,6 +47,7 @@ pub struct WorkerCommand {
     program: PathBuf,
     args: Vec<OsString>,
     envs: Vec<(OsString, OsString)>,
+    start_timeout: Duration,
 }
 
 impl WorkerCommand {
@@ -53,7 +57,19 @@ impl WorkerCommand {
             program: program.into(),
             args: Vec::new(),
             envs: Vec::new(),
+            start_timeout: START_TIMEOUT,
         }
+    }
+
+    /// Sets how long a worker may take to start: to load its model and
+    /// send its handshake. A worker that takes longer is taken as hung and
+    /// killed, and the start fails with a retryable
+    /// [`SpeechError::Backend`]. It applies to every worker the pool
+    /// starts, the first one included. Default: 120 s.
+    #[must_use]
+    pub fn with_start_timeout(mut self, timeout: Duration) -> Self {
+        self.start_timeout = timeout;
+        self
     }
 
     /// Adds an argument.
@@ -108,42 +124,71 @@ impl Worker {
             let _ = process.wait();
             return Err(crashed("no pipes to the worker"));
         };
-        let mut output = BufReader::new(output);
-        let hello =
-            skip_to_handshake(&mut output).and_then(|()| read_frame::<Response>(&mut output));
-        let (name, caps) = match hello {
-            Ok(Some(Response::Hello { name, caps })) => match caps.try_into() {
-                Ok(caps) => (name, caps),
-                Err(error) => {
-                    kill(&mut process);
-                    return Err(error);
-                }
-            },
-            Ok(Some(Response::Error(error))) => {
-                kill(&mut process);
-                return Err(error.into());
-            }
-            Ok(_) => {
-                kill(&mut process);
-                return Err(crashed("no hello from the worker"));
-            }
-            Err(error) => {
-                let status = kill(&mut process);
-                return Err(crashed(format!("{error} ({status})")));
-            }
-        };
+        // The reader thread reads the handshake too, so waiting for it can
+        // time out: the worker loads its model before it answers, and a
+        // load that hangs must not block the caller forever.
         let link: Link = Arc::default();
         let (send, replies) = mpsc::channel();
+        let (send_hello, hello) = mpsc::channel();
         let reader = std::thread::Builder::new()
             .name("speechkit-worker-reader".into())
             .spawn({
                 let link = link.clone();
-                move || read(output, &link, &send)
+                move || {
+                    let mut output = BufReader::new(output);
+                    let first = skip_to_handshake(&mut output)
+                        .and_then(|()| read_frame::<Response>(&mut output));
+                    let started = matches!(first, Ok(Some(Response::Hello { .. })));
+                    if send_hello.send(first).is_ok() && started {
+                        read(output, &link, &send);
+                    }
+                }
             })
             .map_err(|error| {
                 kill(&mut process);
                 crashed(error)
             })?;
+        // Kills the worker, which ends its output and so the reader thread.
+        let abandon = |mut process: Child, reader: JoinHandle<()>| {
+            let status = kill(&mut process);
+            let _ = reader.join();
+            status
+        };
+        let timeout = command.start_timeout;
+        let hello = match hello.recv_timeout(timeout) {
+            Ok(hello) => hello,
+            Err(RecvTimeoutError::Timeout) => {
+                let status = abandon(process, reader);
+                return Err(crashed(format!(
+                    "it did not start within {timeout:?} ({status})"
+                )));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = abandon(process, reader);
+                return Err(crashed(format!("no hello from the worker ({status})")));
+            }
+        };
+        let (name, caps) = match hello {
+            Ok(Some(Response::Hello { name, caps })) => match caps.try_into() {
+                Ok(caps) => (name, caps),
+                Err(error) => {
+                    abandon(process, reader);
+                    return Err(error);
+                }
+            },
+            Ok(Some(Response::Error(error))) => {
+                abandon(process, reader);
+                return Err(error.into());
+            }
+            Ok(_) => {
+                abandon(process, reader);
+                return Err(crashed("no hello from the worker"));
+            }
+            Err(error) => {
+                let status = abandon(process, reader);
+                return Err(crashed(format!("{error} ({status})")));
+            }
+        };
         let worker = Self {
             process,
             input: BufWriter::new(input),
@@ -306,8 +351,10 @@ impl Pool {
 /// A recognizer in worker processes, so a native crash fails one session
 /// rather than the application.
 ///
-/// Each session takes an idle worker, or starts one, which loads the model
-/// within `start`'s deadline. A worker serves one session at a time, and
+/// Each session takes an idle worker, or starts one, which must load the
+/// model within its command's
+/// [start timeout](WorkerCommand::with_start_timeout) or is killed, failing
+/// the session. A worker serves one session at a time, and
 /// goes back to the pool when the session's stream is dropped, so
 /// sessions run in parallel, at the cost of one model load per concurrent
 /// session. If a worker dies, or hangs past its
@@ -350,8 +397,10 @@ impl IsolatedAsr {
     ///
     /// # Errors
     ///
-    /// A retryable backend error if the process cannot start or dies
-    /// before its handshake, or the error the worker reports.
+    /// A retryable backend error if the process cannot start, dies before
+    /// its handshake, or does not send it within the command's
+    /// [start timeout](WorkerCommand::with_start_timeout); or the error the
+    /// worker reports.
     pub fn spawn_command(command: WorkerCommand) -> Result<Self, SpeechError> {
         let (worker, name, caps) = Worker::start(&command)?;
         Ok(Self {
