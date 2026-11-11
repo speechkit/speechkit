@@ -109,7 +109,7 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 
 ### Phase 3 findings
 
-Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8 and 9 are fixed; items 10 to 15 are not yet, and each needs its test first, as in Phase 2.
+Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8, 9, 11 and 12 are fixed; items 10, 13, 14 and 15 are not yet, and each needs its test first, as in Phase 2.
 
 ### 8. `Playback::played` counts audio before it is heard (Confirmed; fixed in 2ef4b3a)
 
@@ -142,21 +142,21 @@ This is inferred from the source, not run: no model is on this machine. `a_repea
 
 Fix, if it reproduces: reset after each detection, add the samples fed before the reset to the token times, and drop the comment's claim that token times always count from the start of the stream.
 
-### 11. A sound queued just after `Speaker::stop` can be stopped by it (Read; minor)
+### 11. A sound queued just after `Speaker::stop` can be stopped by it (Confirmed; fixed in eec1603)
 
-- [ ] Make `Speaker::stop` stop only what was queued before it.
+- [x] Make `Speaker::stop` stop only what was queued before it.
 
 `Speaker::stop` drains the queue and sets `stop_all`, and the player acts on the flag in its next `service`. The player calls `service`, then `next_sound`. If `stop` and a new `play` both land between those two calls, the player takes the new sound and stops it on its next pass. Its `finish` then returns `Ok` with nothing played. The window is microseconds wide.
 
-Fix: number the sounds as they are queued, and have `stop` record the last number it covers.
+Fixed as proposed: sounds are numbered as they are queued, and `stop` records how many it covers. Reproduced by `stop_spares_a_sound_queued_after_it`, which uses a test-only hook to pause the player between the two calls, so the stop and the play land there every time. Before the fix, the later sound never played.
 
-### 12. A streaming transducer can date a segment past the audio it was given (Read; minor)
+### 12. A streaming transducer can date a segment past the audio it was given (Confirmed; fixed in 555854e)
 
-- [ ] Clamp token times to the samples fed.
+- [x] Clamp token times to the samples fed.
 
 `Stream::decode` (`crates/speechkit/src/sherpa/asr/streaming.rs:283`) turns token timestamps into segment times as they are. `finish` feeds `TAIL_PADDING` of silence, so a token decoded in the padding has a time past the end of the input. The keyword spotter clamps its times to the audio heard (`seconds(value, heard)`); the streaming recognizer does not.
 
-Fix: clamp to `at(self.fed)`, as the spotter does, and assert `end <= duration` in the model tests, as `sherpa_kws.rs` does.
+Reproduced against streaming-en (already on this machine) by `streaming_segments_end_within_the_audio`, which cuts `test_wavs/0.wav` at each tenth from 30% to 90%. Every cut gave a segment ending past the audio, by up to 530 ms. Token times are now clamped to the samples fed, and the test passes, as do the streaming goldens and the ASR contract on the model. Not run on streaming-bilingual or streaming-zh, which are not on this machine; the nightly `models.yml` run covers them.
 
 ### 13. The release workflow trusts the tag (Read)
 
