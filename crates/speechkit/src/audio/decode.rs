@@ -39,7 +39,14 @@ fn open(source: MediaSourceStream<'static>) -> Result<Track, SpeechError> {
             FormatOptions::default(),
             MetadataOptions::default(),
         )
-        .map_err(|e| invalid(format_args!("{e}; supported formats: {SUPPORTED_FORMATS}")))?;
+        .map_err(|e| match e {
+            // symphonia's own wording ("core (probe): no suitable format
+            // reader found") names its internals, not the user's problem.
+            SymphoniaError::Unsupported(_) => invalid(format_args!(
+                "not a supported audio format; supported formats: {SUPPORTED_FORMATS}"
+            )),
+            e => invalid(format_args!("{e}; supported formats: {SUPPORTED_FORMATS}")),
+        })?;
     let track = format
         .default_track(TrackType::Audio)
         .ok_or_else(|| invalid("the file has no audio track"))?;

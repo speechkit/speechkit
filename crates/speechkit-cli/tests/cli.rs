@@ -341,3 +341,162 @@ fn serve_needs_the_token_variable() {
     );
     assert_eq!(result.err().map(|e| e.code), Some(2));
 }
+
+/// Every failure path gives its exit code and a message that says what
+/// went wrong in the user's terms, on stderr after `error: `, with nothing
+/// on stdout. Items 5 and 6 of the review were both the CLI saying the
+/// wrong thing on a failure path.
+#[test]
+#[expect(clippy::too_many_lines, reason = "a table with one row per failure")]
+fn failures_give_their_code_and_message() {
+    struct Case {
+        name: &'static str,
+        args: Vec<String>,
+        backends: Box<dyn BackendFactory>,
+        code: u8,
+        says: &'static [&'static str],
+        not: &'static [&'static str],
+        /// Released after the call, for a backend that blocks.
+        gate: Option<Gate>,
+    }
+    let (_dir, good) = wav_file(1);
+    let good = good.to_str().unwrap().to_owned();
+    let scratch = tempfile::tempdir().unwrap();
+    let bad = scratch.path().join("bad.wav");
+    std::fs::write(&bad, b"not audio at all").unwrap();
+    let bad = bad.to_str().unwrap().to_owned();
+    let empty = scratch.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let empty = empty.to_str().unwrap().to_owned();
+    let args = |list: &[&str]| list.iter().map(|&arg| arg.to_owned()).collect::<Vec<_>>();
+    let stuck = || {
+        let gate = Gate::new();
+        let fake = FakeAsr::new(
+            Script::new().then(Trigger::OnFinish, Step::BlockUntilReleased(gate.clone())),
+        );
+        (Box::new(Fake(fake)) as Box<dyn BackendFactory>, gate)
+    };
+    let (stuck_transcribe, transcribe_gate) = stuck();
+    let (stuck_stream, stream_gate) = stuck();
+    let cases = vec![
+        Case {
+            name: "a timeout",
+            args: args(&["transcribe", &good, "--timeout", "1"]),
+            backends: stuck_transcribe,
+            code: speechkit_cli::EXIT_BACKEND,
+            says: &["deadline exceeded"],
+            not: &["cancel"],
+            gate: Some(transcribe_gate),
+        },
+        Case {
+            name: "a timeout while streaming",
+            args: args(&["stream", &good, "--timeout", "1"]),
+            backends: stuck_stream,
+            code: speechkit_cli::EXIT_BACKEND,
+            says: &["deadline exceeded"],
+            not: &["cancel"],
+            gate: Some(stream_gate),
+        },
+        Case {
+            name: "a missing audio file",
+            args: args(&["transcribe", "/nonexistent/a.wav"]),
+            backends: Box::new(Fake(FakeAsr::hello_world())),
+            code: speechkit_cli::EXIT_INPUT,
+            says: &["/nonexistent/a.wav", "No such file"],
+            not: &[],
+            gate: None,
+        },
+        Case {
+            name: "a file that is not audio",
+            args: args(&["transcribe", &bad]),
+            backends: Box::new(Fake(FakeAsr::hello_world())),
+            code: speechkit_cli::EXIT_INPUT,
+            says: &["not a supported audio format", "supported formats: WAV"],
+            not: &["probe", "format reader"],
+            gate: None,
+        },
+        Case {
+            name: "a missing model directory",
+            args: args(&["transcribe", &good, "--model", "/nonexistent/model"]),
+            backends: Box::new(speechkit_cli::Backends::default()),
+            code: speechkit_cli::EXIT_INPUT,
+            says: &["invalid model", "/nonexistent/model"],
+            not: &[],
+            gate: None,
+        },
+        Case {
+            name: "a model directory without a model",
+            args: args(&["transcribe", &good, "--model", &empty]),
+            backends: Box::new(speechkit_cli::Backends::default()),
+            code: speechkit_cli::EXIT_INPUT,
+            says: &["invalid model", "encoder"],
+            not: &[],
+            gate: None,
+        },
+        Case {
+            name: "no model at all",
+            args: args(&["transcribe", &good]),
+            backends: Box::new(speechkit_cli::Backends::default()),
+            code: speechkit_cli::EXIT_INPUT,
+            says: &["--model"],
+            not: &[],
+            gate: None,
+        },
+        Case {
+            name: "a backend that cannot start",
+            args: args(&["transcribe", &good]),
+            backends: Box::new(Broken),
+            code: speechkit_cli::EXIT_BACKEND,
+            says: &["service unavailable"],
+            not: &[],
+            gate: None,
+        },
+        Case {
+            name: "a bind address with a bad port",
+            args: args(&["serve", "--bind", "127.0.0.1:port"]),
+            backends: Box::new(Broken),
+            code: speechkit_cli::EXIT_USAGE,
+            says: &["127.0.0.1:port", "port"],
+            not: &["service unavailable"],
+            gate: None,
+        },
+        Case {
+            name: "a bind address without a port",
+            args: args(&["serve", "--bind", "localhost"]),
+            backends: Box::new(Broken),
+            code: speechkit_cli::EXIT_USAGE,
+            says: &["localhost"],
+            not: &["service unavailable"],
+            gate: None,
+        },
+        Case {
+            name: "a timeout that is not a number",
+            args: args(&["transcribe", &good, "--timeout", "soon"]),
+            backends: Box::new(Fake(FakeAsr::hello_world())),
+            code: speechkit_cli::EXIT_USAGE,
+            says: &["--timeout", "soon"],
+            not: &[],
+            gate: None,
+        },
+    ];
+    for case in cases {
+        let args: Vec<&str> = case.args.iter().map(String::as_str).collect();
+        let (code, stdout, stderr) = call(&args, &*case.backends);
+        if let Some(gate) = &case.gate {
+            gate.release();
+        }
+        let name = case.name;
+        assert_eq!(code, ExitCode::from(case.code), "{name}: {stderr}");
+        assert_eq!(stdout, "", "{name}: stdout");
+        assert!(stderr.starts_with("error: "), "{name}: {stderr}");
+        for wanted in case.says {
+            assert!(stderr.contains(wanted), "{name}: no {wanted:?} in {stderr}");
+        }
+        for unwanted in case.not {
+            assert!(
+                !stderr.contains(unwanted),
+                "{name}: {unwanted:?} in {stderr}"
+            );
+        }
+    }
+}
