@@ -92,6 +92,11 @@ async fn pcm_and_wav_success() {
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(&wav[4..8], &[0xFF; 4], "placeholder size");
     assert!(close_to_expected((wav.len() - 44) / 2));
+    // speechkit reads what its own server writes.
+    let decoded = speechkit::audio::decode(&wav, speechkit::audio::DecodeLimits::default())
+        .expect("the streaming WAV decodes");
+    assert_eq!(decoded.sample_rate.hz(), 24_000);
+    assert_eq!(decoded.samples.len(), (wav.len() - 44) / 2);
 
     // Missing and null optional fields keep the existing defaults.
     let (status, wav) = send(
