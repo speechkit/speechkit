@@ -69,10 +69,7 @@ impl Server {
                 "the server has no engine to serve; add one with with_asr or with_tts".into(),
             ));
         }
-        let address: SocketAddr = self.bind.parse().map_err(|_| {
-            SpeechError::InvalidInput(format!("invalid bind address {:?}", self.bind))
-        })?;
-        let listener = TcpListener::bind(address).await.map_err(io_error)?;
+        let listener = bind(&self.bind).await?;
         let local_addr = listener.local_addr().map_err(io_error)?;
         let header_timeout = self.header_timeout;
         let app = self.router();
@@ -231,6 +228,26 @@ async fn serve_connections(
     }
     drop(listener);
     graceful.shutdown().await;
+}
+
+/// Listens on the first address `bind` names that can be bound: an address
+/// such as `0.0.0.0:8080`, or a name and port such as `localhost:8080`.
+async fn bind(bind: &str) -> Result<TcpListener, SpeechError> {
+    let invalid = |why: &dyn std::fmt::Display| {
+        SpeechError::InvalidInput(format!("invalid bind address {bind:?}: {why}"))
+    };
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host(bind)
+        .await
+        .map_err(|e| invalid(&e))?
+        .collect();
+    let mut last = None;
+    for address in addresses {
+        match TcpListener::bind(address).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.map_or_else(|| invalid(&"it names no address"), io_error))
 }
 
 fn io_error(error: std::io::Error) -> SpeechError {
