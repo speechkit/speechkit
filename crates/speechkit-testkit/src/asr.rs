@@ -29,6 +29,9 @@ pub enum Trigger {
     OnFinish,
     /// When the stream is opened.
     OnOpen,
+    /// When the stream is cancelled. A step that fails here is ignored,
+    /// since `cancel` cannot fail.
+    OnCancel,
 }
 
 /// What a scripted step does.
@@ -344,12 +347,13 @@ impl AsrStream for FakeStream {
         self.run(|trigger, seen| match trigger {
             Trigger::AfterSamples(n) => n <= seen,
             Trigger::OnFinish => true,
-            Trigger::OnOpen => false,
+            Trigger::OnOpen | Trigger::OnCancel => false,
         })
     }
 
     fn cancel(&mut self) {
         self.stats.cancelled.fetch_add(1, Ordering::SeqCst);
+        let _ = self.run(|trigger, _| trigger == Trigger::OnCancel);
     }
 }
 
