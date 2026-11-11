@@ -77,6 +77,11 @@ pub fn t02_finish_waits_for_the_reader() {
         .expect("start");
     session.push_text("Short.").expect("push");
     session.close_text();
+    // Audio is queued before `finish` waits, however slow the machine.
+    assert!(
+        eventually(SETTLE, || output.peak_queued_samples() > 0),
+        "no audio was made"
+    );
     let unread = session.finish(Duration::from_millis(200));
     let failure = unread.expect_err("nobody read the audio");
     assert!(matches!(failure.error, SpeechError::DeadlineExceeded));
