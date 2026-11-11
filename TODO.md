@@ -109,25 +109,25 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 
 ### Phase 3 findings
 
-Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8 to 15 are not fixed yet; each needs its test first, as in Phase 2.
+Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8 and 9 are fixed; items 10 to 15 are not yet, and each needs its test first, as in Phase 2.
 
-### 8. `Playback::played` counts audio before it is heard (Confirmed; D-06)
+### 8. `Playback::played` counts audio before it is heard (Confirmed; fixed in 2ef4b3a)
 
-- [ ] Count only the samples whose playback time has passed, whatever the device latency.
+- [x] Count only the samples whose playback time has passed, whatever the device latency.
 
 `Shared::played_index` (`crates/speechkit/src/io/speaker/mod.rs:189`) knows only the latest callback buffer: its first index, when that buffer starts playing, and its length. When the callback for buffer N+1 runs, buffer N is usually still waiting to be played, since device latency is longer than one buffer on most devices (tens of ms; Bluetooth, 150 ms or more). But `played_index` already returns the start of buffer N+1. So `played()` and `text_played()` run ahead of what the listener heard by about the latency, which is what D-06 rules out and what barge-in relies on.
 
 Reproduced with a temporary unit test: two 10 ms buffers rendered with 100 ms latency, then `played_index()` returned 160 frames when nothing had reached its playback time. The device contract checks cannot see it, because `FakeSpeaker::play` renders with zero latency.
 
-Fix: when the latest buffer's time is still ahead, count back from its start by `frames_in(at - now)`, or keep a short history of buffers, and never below the last index already reported. Give `FakeSpeaker` a latency setting, and add the check to D-06.
+Fixed: the callback now records the index after the last sample it took and when that sample finishes playing. `played_index` counts back from there by the time left, rounded up, and never goes back. Counting back from the latest buffer's *start*, as first proposed, was not enough. The callbacks of silence after a sound each date themselves a latency ahead, so the count never reached the sound's end, and a playback on a device with latency would never have finished. A buffer of only silence now keeps the previous time. `FakeSpeaker::play_ahead` renders with a latency, and D-06 now drives a 100 ms latency with buffers paced like a device; the old code fails it.
 
-### 9. Dropping a cloud stream can block on a peer that stopped reading (Read)
+### 9. Dropping a cloud stream can block on a peer that stopped reading (Confirmed; fixed in 0ffee58)
 
-- [ ] Bound the whole close in `Pushed::drop`.
+- [x] Bound the whole close in `Pushed::drop`.
 
 `Pushed::drop` (`crates/speechkit/src/cloud/ws.rs:552`) sends the close frame within `CLOSE_WAIT` (1 s). It then calls `sink.close().await` with no timeout, and that flushes whatever is still buffered. If the server has stopped reading and the socket buffers are full, for example after an `append` that timed out, the drop waits until the TCP connection dies. The session's slot is held until the drop returns, which is the item 3 and 4 pattern again.
 
-Fix: put the whole close sequence under `timeout(CLOSE_WAIT, …)`. Test with a WebSocket server that accepts and then never reads.
+Reproduced by `dropping_a_stalled_connection_is_bounded` in `cloud/ws.rs`: a local server accepts and never reads, the client sends until a send times out, and the drop was still blocked after 5 s. The close frame and the close now share one `CLOSE_WAIT` bound, and the drop returns in about 1 s.
 
 ### 10. Keyword spotting after a pause may report wrong times, or miss a repeat (Read; needs a model)
 
