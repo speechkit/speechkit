@@ -35,8 +35,13 @@ use crate::{
 /// The rate of every fake microphone here.
 pub const RATE: SampleRate = SampleRate::HZ_16000;
 
-/// How long a call that returns at once may take.
-const AT_ONCE: Duration = Duration::from_millis(100);
+/// How long a call that returns at once may take: generous, so a loaded
+/// machine does not fail it, but half of [`BUSY`], so a call that waited
+/// for a busy detector does.
+const AT_ONCE: Duration = Duration::from_millis(500);
+
+/// How long the busy detector in D-04 takes over each chunk.
+const BUSY: Duration = Duration::from_secs(1);
 
 /// Frames in `millis` milliseconds at [`RATE`].
 fn ms(millis: u64) -> usize {
@@ -391,7 +396,7 @@ pub fn d04_stop_returns_at_once() {
         .listen(&stuck, AsrOptions::default(), ListenOptions::default())
         .expect("listen");
     let watching = capture
-        .watch(&FakeWakeWord::new().with_delay(Duration::from_millis(500)))
+        .watch(&FakeWakeWord::new().with_delay(BUSY))
         .expect("watch");
     mic.push(&ramp(0, ms(500)));
     assert!(gate.wait_entered(1, SETTLE), "no session started opening");
