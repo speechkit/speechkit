@@ -82,7 +82,7 @@ impl Server {
         }
         let listener = bind(&self.bind).await?;
         let local_addr = listener.local_addr().map_err(io_error)?;
-        let header_timeout = self.header_timeout;
+        let timeouts = (self.header_timeout, self.shutdown_timeout);
         let app = self.router();
         let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
@@ -92,7 +92,7 @@ impl Server {
                     () = stop => {},
                 }
             };
-            serve_connections(listener, app, header_timeout, signal).await;
+            serve_connections(listener, app, timeouts, signal).await;
             Ok(())
         });
         tracing::info!(%local_addr, "listening");
@@ -199,7 +199,8 @@ impl RunningServer {
     }
 }
 
-/// Accepts connections until `signal`, then lets open ones finish.
+/// Accepts connections until `signal`, then lets open ones finish for up
+/// to the shutdown timeout, and closes the rest.
 ///
 /// `axum::serve` sets no timer, so hyper would never enforce a header
 /// timeout; serving each connection here fixes that, which stops clients
@@ -207,7 +208,7 @@ impl RunningServer {
 async fn serve_connections(
     listener: TcpListener,
     app: Router,
-    header_timeout: std::time::Duration,
+    (header_timeout, shutdown_timeout): (std::time::Duration, std::time::Duration),
     signal: impl Future<Output = ()>,
 ) {
     use hyper_util::{
@@ -217,6 +218,9 @@ async fn serve_connections(
     };
 
     let graceful = GracefulShutdown::new();
+    // Set once the shutdown timeout passes: every connection still open
+    // is dropped, which closes its socket.
+    let (close, closed) = tokio::sync::watch::channel(false);
     let mut signal = std::pin::pin!(signal);
     loop {
         let stream = tokio::select! {
@@ -238,14 +242,31 @@ async fn serve_connections(
         let connection =
             builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(app.clone()));
         let connection = graceful.watch(connection);
+        let mut closed = closed.clone();
         tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::debug!(%error, "connection ended with an error");
+            tokio::select! {
+                result = connection => {
+                    if let Err(error) = result {
+                        tracing::debug!(%error, "connection ended with an error");
+                    }
+                }
+                _ = closed.wait_for(|&closed| closed) => {
+                    tracing::debug!("connection closed at shutdown");
+                }
             }
         });
     }
     drop(listener);
-    graceful.shutdown().await;
+    if tokio::time::timeout(shutdown_timeout, graceful.shutdown())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            ?shutdown_timeout,
+            "connections were still open after the shutdown timeout; closing them"
+        );
+        let _ = close.send(true);
+    }
 }
 
 /// Listens on the first address `bind` names that can be bound: an address

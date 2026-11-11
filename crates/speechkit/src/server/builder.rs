@@ -28,6 +28,7 @@ pub struct Server {
     /// OpenAI's documented limit.
     pub(crate) max_speech_chars: usize,
     pub(crate) auth: Option<Arc<Secret>>,
+    pub(crate) shutdown_timeout: Duration,
 }
 
 impl Default for Server {
@@ -43,6 +44,7 @@ impl Default for Server {
             body_timeout: Duration::from_secs(120),
             max_speech_chars: 4096,
             auth: None,
+            shutdown_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -114,6 +116,18 @@ impl Server {
     #[must_use]
     pub fn with_auth(mut self, token: impl Into<Arc<Secret>>) -> Self {
         self.auth = Some(token.into());
+        self
+    }
+
+    /// How long stopping waits for open connections to finish their
+    /// requests. Connections still open after it are closed, which cancels
+    /// their sessions as a disconnect does. It bounds the stop even when a
+    /// client has stopped reading its response, which would otherwise hold
+    /// the connection open for as long as the client keeps it. Default:
+    /// 30 s.
+    #[must_use]
+    pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
         self
     }
 
