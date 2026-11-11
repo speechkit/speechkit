@@ -107,6 +107,84 @@ Fix: leave the failure in place (clone it, or store the error from `drive` into 
 - [x] (931edff) `RunningServer` stops the server when it is dropped (the shutdown sender drops). That is reasonable, but undocumented: `let _ = server.start(..).await?` stops at once. Say so in its doc comment, and mark it `#[must_use]`.
 - [ ] `IsolatedAsr`'s idle pool only grows: after a burst it keeps one loaded model per peak concurrent session. Consider a cap or an idle timeout. Left open: it needs a design decision, not a fix.
 
+### Phase 3 findings
+
+Found on 2026-11-11 by reading the areas Phase 3 lists. Items 8 to 15 are not fixed yet; each needs its test first, as in Phase 2.
+
+### 8. `Playback::played` counts audio before it is heard (Confirmed; D-06)
+
+- [ ] Count only the samples whose playback time has passed, whatever the device latency.
+
+`Shared::played_index` (`crates/speechkit/src/io/speaker/mod.rs:189`) knows only the latest callback buffer: its first index, when that buffer starts playing, and its length. When the callback for buffer N+1 runs, buffer N is usually still waiting to be played, since device latency is longer than one buffer on most devices (tens of ms; Bluetooth, 150 ms or more). But `played_index` already returns the start of buffer N+1. So `played()` and `text_played()` run ahead of what the listener heard by about the latency, which is what D-06 rules out and what barge-in relies on.
+
+Reproduced with a temporary unit test: two 10 ms buffers rendered with 100 ms latency, then `played_index()` returned 160 frames when nothing had reached its playback time. The device contract checks cannot see it, because `FakeSpeaker::play` renders with zero latency.
+
+Fix: when the latest buffer's time is still ahead, count back from its start by `frames_in(at - now)`, or keep a short history of buffers, and never below the last index already reported. Give `FakeSpeaker` a latency setting, and add the check to D-06.
+
+### 9. Dropping a cloud stream can block on a peer that stopped reading (Read)
+
+- [ ] Bound the whole close in `Pushed::drop`.
+
+`Pushed::drop` (`crates/speechkit/src/cloud/ws.rs:552`) sends the close frame within `CLOSE_WAIT` (1 s). It then calls `sink.close().await` with no timeout, and that flushes whatever is still buffered. If the server has stopped reading and the socket buffers are full, for example after an `append` that timed out, the drop waits until the TCP connection dies. The session's slot is held until the drop returns, which is the item 3 and 4 pattern again.
+
+Fix: put the whole close sequence under `timeout(CLOSE_WAIT, …)`. Test with a WebSocket server that accepts and then never reads.
+
+### 10. Keyword spotting after a pause may report wrong times, or miss a repeat (Read; needs a model)
+
+- [ ] Check a keyword, then 3 s of silence, then the keyword again, against the kws-en model.
+
+`Detector::decode` (`crates/speechkit/src/sherpa/kws/mod.rs:473`) never resets the stream. It relies on two things: sherpa-onnx's decoder restarting after a match, and `GetKeywordResult(true)` dropping a result that overlaps the last one. Upstream source (sherpa-onnx master, read 2026-11-11) confirms both. But `KeywordSpotterTransducerImpl::DecodeStreams` also resets the stream by itself after 1.5 s of trailing blanks. That reset re-initializes the decoder result, which probably restarts token timestamps. It does not clear `prev_keyword_result_`, which the duplicate check compares against. So after a pause:
+
+- a new detection may be dated from the reset, not from the start of the stream;
+- or a genuine second keyword may be dropped as a "duplicate", because its first timestamp is below the previous keyword's last one.
+
+This is inferred from the source, not run: no model is on this machine. `a_repeated_keyword_is_spotted_each_time` concatenates one clip three times, and may not hold a 1.5 s pause. Upstream's own examples call `reset` after every detection.
+
+Fix, if it reproduces: reset after each detection, add the samples fed before the reset to the token times, and drop the comment's claim that token times always count from the start of the stream.
+
+### 11. A sound queued just after `Speaker::stop` can be stopped by it (Read; minor)
+
+- [ ] Make `Speaker::stop` stop only what was queued before it.
+
+`Speaker::stop` drains the queue and sets `stop_all`, and the player acts on the flag in its next `service`. The player calls `service`, then `next_sound`. If `stop` and a new `play` both land between those two calls, the player takes the new sound and stops it on its next pass. Its `finish` then returns `Ok` with nothing played. The window is microseconds wide.
+
+Fix: number the sounds as they are queued, and have `stop` record the last number it covers.
+
+### 12. A streaming transducer can date a segment past the audio it was given (Read; minor)
+
+- [ ] Clamp token times to the samples fed.
+
+`Stream::decode` (`crates/speechkit/src/sherpa/asr/streaming.rs:283`) turns token timestamps into segment times as they are. `finish` feeds `TAIL_PADDING` of silence, so a token decoded in the padding has a time past the end of the input. The keyword spotter clamps its times to the audio heard (`seconds(value, heard)`); the streaming recognizer does not.
+
+Fix: clamp to `at(self.fed)`, as the spotter does, and assert `end <= duration` in the model tests, as `sherpa_kws.rs` does.
+
+### 13. The release workflow trusts the tag (Read)
+
+- [ ] Decide which of these to adopt.
+
+`release.yml` publishes to crates.io on any `v*` tag that matches the manifest and the changelog. Nothing checks that CI passed on the tagged commit; `cargo xtask release-check` covers part of it, but only if someone runs it first. The actions are pinned by tag (`@v4`, `@v1`, `@stable`), not by commit, in jobs that hold `id-token: write` and `contents: write`. The release attaches binaries without checksums or provenance.
+
+Options: a job that checks the `ci.yml` run for the tagged commit; actions pinned to commit SHAs (with Dependabot to bump them); a `SHA256SUMS` file, or `actions/attest-build-provenance`.
+
+### 14. `xtask` unpacks a download before it knows its size is right (Read; minor)
+
+- [ ] Stop reading past the manifest's size.
+
+`fetch_archive` (`xtask/src/models.rs:317`) checks the archive's size and hash only after the last byte, as documented. Members cannot escape the staging directory (`unpack_in`). But a bad mirror or a compression bomb can write any amount to disk first. Fail the `Hashing` reader as soon as it passes `archive.size`; the hash check stays at the end.
+
+### 15. More checks that assume a fast machine (Read)
+
+- [ ] Watch these in the nightly repeats, with the two Phase 1 named.
+
+- `t02_finish_waits_for_the_reader` (`speechkit-testkit/src/contract/tts/faults.rs:73`) expects audio to have been synthesized within a 200 ms `finish`.
+- The device checks use `AT_ONCE` (100 ms) as an upper bound for `stop` and for a cancelled finish (`contract/devices.rs:403`, `:436`).
+
+The other sleeps in the testkit are followed by upper bounds or "nothing happened" checks.
+
+### Read, nothing found
+
+The OpenAI SSE decoder and HTTP limits; the Realtime and DashScope state machines and the shared WebSocket envelope (apart from item 9); the keyword tokenizer; the offline recognizer's checks; layout selection; silero VAD; sherpa TTS; bias and punctuation; `tts/chunk`; `asr/engine`; `vad/energy`; `speech/resample`; `release-check`.
+
 ## Proposal
 
 In order. The first two phases are small and should each be a handful of `fix(...)` commits; the later ones are larger and need a decision before work starts.
@@ -125,23 +203,23 @@ In order. The first two phases are small and should each be a handful of `fix(..
 - [x] Items 2 to 7 and the smaller notes, one commit each, test first. Items 3 to 7 were found by reading, so the test is also the confirmation. Every item reproduced, so none was dropped. The pool cap is left open on purpose, as are the follow-ups listed under items 2 and 3.
 - [x] Update SECURITY.md where a fix changes what it claims: items 3 and 4, and the empty auth token.
 
-### Phase 3: finish the review
+### Phase 3: finish the review (done 2026-11-11; findings 8 to 15)
 
 The review did not read these. They are the larger part of the code by lines, and two of them parse untrusted input:
 
-- [ ] `io/speaker` (about 1,600 lines with tests): playback, marks, the "played" accounting behind D-06.
-- [ ] `cloud/openai/realtime` and `cloud/dashscope` protocol state: everything a server can send, in any order.
-- [ ] `cloud/openai/http`: the SSE parser and the byte limits SECURITY.md describes.
-- [ ] `sherpa`: `kws` and `kws/tokenize`, `asr/recognizer`, `asr/streaming`, `layout`, `tts`, `vad`, `bias`, `punct`.
-- [ ] `tts/chunk`, `asr/engine`, `vad/energy`, `speech/resample`.
-- [ ] `xtask` (model fetching and hashing, release) and the release workflow.
-- [ ] The `speechkit-testkit` fakes, for more timing assumptions like item 1.
+- [x] `io/speaker` (about 1,600 lines with tests): playback, marks, the "played" accounting behind D-06.
+- [x] `cloud/openai/realtime` and `cloud/dashscope` protocol state: everything a server can send, in any order.
+- [x] `cloud/openai/http`: the SSE parser and the byte limits SECURITY.md describes.
+- [x] `sherpa`: `kws` and `kws/tokenize`, `asr/recognizer`, `asr/streaming`, `layout`, `tts`, `vad`, `bias`, `punct`.
+- [x] `tts/chunk`, `asr/engine`, `vad/energy`, `speech/resample`.
+- [x] `xtask` (model fetching and hashing, release) and the release workflow.
+- [x] The `speechkit-testkit` fakes, for more timing assumptions like item 1.
 
 ### Phase 4: close the gaps the findings point at
 
 Each finding is one case of a wider gap. These are worth doing once, rather than waiting for the next case.
 
-- [ ] **Every blocking wait on something outside the process has a bound.** Items 3 and 4 are both an unbounded wait on a peer (a child process, a client socket). Grep for `blocking_send`, `read_exact`, `write_all`, `wait_forever`, and `recv()` without a timeout, and write down for each why it cannot block forever, or bound it.
+- [ ] **Every blocking wait on something outside the process has a bound.** Items 3, 4 and 9 are each an unbounded wait on a peer (a child process, a client socket, a WebSocket server). Grep for `blocking_send`, `read_exact`, `write_all`, `wait_forever`, and `recv()` without a timeout, and write down for each why it cannot block forever, or bound it.
 - [ ] **Round-trip tests across speechkit's own boundaries.** Item 2 is the server writing something the library cannot read. Add tests that pipe each producer into each consumer: `/v1/audio/speech` → `audio::decode` → `/v1/audio/transcriptions`; `encode_wav` → `audio::read`; the OpenAI speech client against the speechkit server. `round_trip.rs` is the place.
 - [ ] **CLI tests for failure messages.** Items 5 and 6 are both the CLI saying the wrong thing on a failure path. Add a table test of failures (timeout, bad bind, missing model, bad audio) with the exit code and the message each must give.
 - [ ] **A server fuzz or soak target for slow clients.** `server_request` fuzzes request bodies; nothing exercises slow or stalled readers and writers. A test harness with a throttled socket would have caught item 4.
