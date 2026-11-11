@@ -401,6 +401,26 @@ fn interop_with_the_openai_http_client() {
     runtime.block_on(running.shutdown()).unwrap();
 }
 
+/// Dropping the handle stops the server: it stops accepting connections.
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_a_running_server_stops_it() {
+    let running = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("127.0.0.1:0")
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let addr = running.local_addr();
+    tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("it listens");
+    drop(running);
+    let begun = std::time::Instant::now();
+    while tokio::net::TcpStream::connect(addr).await.is_ok() {
+        assert!(begun.elapsed() < Duration::from_secs(10), "still listening");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn start_needs_an_engine() {
     let Err(error) = Server::new()

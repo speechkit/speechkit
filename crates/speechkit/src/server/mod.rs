@@ -155,6 +155,13 @@ async fn models(State(state): State<state::Shared>) -> Response {
 }
 
 /// A server listening on a socket.
+///
+/// Dropping it stops the server as [`shutdown`](Self::shutdown) does,
+/// without waiting: it stops accepting connections and lets in-flight
+/// requests finish in the background. Keep it for as long as the server
+/// should run, or call [`wait`](Self::wait) to serve until the `stop`
+/// future given to [`Server::start`] completes.
+#[must_use = "dropping a RunningServer stops the server"]
 pub struct RunningServer {
     local_addr: SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
