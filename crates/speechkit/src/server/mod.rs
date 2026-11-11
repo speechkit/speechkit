@@ -5,6 +5,7 @@ mod deadline;
 mod delta;
 mod error;
 mod speech;
+mod stall;
 mod state;
 mod transcriptions;
 
@@ -84,7 +85,11 @@ impl Server {
         }
         let listener = bind(&self.bind).await?;
         let local_addr = listener.local_addr().map_err(io_error)?;
-        let timeouts = (self.header_timeout, self.shutdown_timeout);
+        let timeouts = Timeouts {
+            header: self.header_timeout,
+            write: self.write_timeout,
+            shutdown: self.shutdown_timeout,
+        };
         let app = self.router();
         let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
@@ -201,6 +206,13 @@ impl RunningServer {
     }
 }
 
+/// The per-connection timeouts `serve_connections` enforces.
+struct Timeouts {
+    header: std::time::Duration,
+    write: std::time::Duration,
+    shutdown: std::time::Duration,
+}
+
 /// Accepts connections until `signal`, then lets open ones finish for up
 /// to the shutdown timeout, and closes the rest.
 ///
@@ -210,7 +222,7 @@ impl RunningServer {
 async fn serve_connections(
     listener: TcpListener,
     app: Router,
-    (header_timeout, shutdown_timeout): (std::time::Duration, std::time::Duration),
+    timeouts: Timeouts,
     signal: impl Future<Output = ()>,
 ) {
     use hyper_util::{
@@ -240,7 +252,8 @@ async fn serve_connections(
         let mut builder = hyper::server::conn::http1::Builder::new();
         builder
             .timer(TokioTimer::new())
-            .header_read_timeout(header_timeout);
+            .header_read_timeout(timeouts.header);
+        let stream = stall::WriteTimeout::new(stream, timeouts.write);
         let connection =
             builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(app.clone()));
         let connection = graceful.watch(connection);
@@ -259,6 +272,7 @@ async fn serve_connections(
         });
     }
     drop(listener);
+    let shutdown_timeout = timeouts.shutdown;
     if tokio::time::timeout(shutdown_timeout, graceful.shutdown())
         .await
         .is_err()

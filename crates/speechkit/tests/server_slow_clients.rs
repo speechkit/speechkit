@@ -285,3 +285,82 @@ const LONG_WORD: &str = "wordwordwordwordwordwordwordwordwordwordwordwordwordwor
 wordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordword\
 wordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordword\
 wordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordwordword";
+
+/// A reader that stops reading, on a server with no request timeout (the
+/// default), loses its connection once the server has waited
+/// `with_write_timeout` for it to take more, which frees its slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_reader_is_dropped_after_the_write_timeout() {
+    let tts = TtsEngine::new(FakeTts::plain()).with_max_sessions(1);
+    let running = Server::new()
+        .with_tts(tts.clone(), "fake-tts")
+        .with_bind("127.0.0.1:0")
+        .with_write_timeout(Duration::from_millis(500))
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let mut stalled = connect(running.local_addr()).await;
+    stalled.write_all(&long_speech()).await.unwrap();
+    holding(1, || tts.active_sessions()).await;
+
+    let started = Instant::now();
+    while tts.active_sessions() > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a stalled reader held the only slot for 5 s"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    drop(stalled);
+    running.shutdown().await.unwrap();
+}
+
+/// The write timeout only catches a client that takes nothing: one that
+/// reads slowly, but more often than the timeout, gets all of a response
+/// that takes many timeouts to send.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_reader_that_keeps_reading_gets_everything() {
+    let running = Server::new()
+        .with_tts(TtsEngine::new(FakeTts::plain()), "fake-tts")
+        .with_bind("127.0.0.1:0")
+        .with_write_timeout(Duration::from_millis(300))
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let address = running.local_addr();
+    let body = json!({"model": "tts-1", "input": "word. ".repeat(100), "voice": "alpha",
+        "response_format": "pcm"});
+    let speech = request(
+        "/v1/audio/speech",
+        "application/json",
+        body.to_string().as_bytes(),
+    );
+
+    let mut fast = TcpStream::connect(address).await.unwrap();
+    fast.write_all(&speech).await.unwrap();
+    let mut whole = Vec::new();
+    fast.read_to_end(&mut whole).await.unwrap();
+    let mut slow = connect(address).await;
+    slow.write_all(&speech).await.unwrap();
+    let started = Instant::now();
+    let (read, ended) = read_slowly(
+        slow,
+        4096,
+        Duration::from_millis(50),
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(ended);
+    assert!(
+        started.elapsed() > Duration::from_secs(1),
+        "the response took {:?}, under several write timeouts",
+        started.elapsed()
+    );
+    // Chunk framing may differ a little between the two.
+    assert!(
+        read.abs_diff(whole.len()) < whole.len() / 100,
+        "the slow reader got {read} of {} bytes",
+        whole.len()
+    );
+    running.shutdown().await.unwrap();
+}
