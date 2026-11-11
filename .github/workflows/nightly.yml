@@ -24,8 +24,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/native
-      - run: cargo test --workspace --all-features
+      # `--no-fail-fast`, as in ci.yml, so one failure hides no other.
+      - run: cargo test --workspace --all-features --no-fail-fast
         shell: bash
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+      # The device tests race the capture and player threads against the
+      # fake devices. One run on a fast machine rarely loses such a race,
+      # so repeat them here, on the slower runners, where a flake shows
+      # before it reaches a pull request. It reuses the build above.
+      - name: repeat the device tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          for run in $(seq 1 50); do
+            cargo test --workspace --all-features -q \
+              --test io_contract --test io_listening --test io_scenarios --test io_toggle_to_talk \
+              || { echo "the device tests failed on run $run of 50"; exit 1; }
+          done
         env:
           DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/target/debug
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
@@ -45,7 +62,7 @@ jobs:
       - name: Install ffmpeg
         run: command -v ffmpeg || sudo apt-get install -y ffmpeg
       - name: test-minimal
-        run: cargo test --workspace --no-default-features
+        run: cargo test --workspace --no-default-features --no-fail-fast
       - name: hack
         if: ${{ !cancelled() }}
         run: cargo hack check --each-feature --workspace --no-dev-deps
