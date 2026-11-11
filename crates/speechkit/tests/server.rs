@@ -382,6 +382,42 @@ async fn saturated_engine_rejects_before_decoding() {
     drop(session);
 }
 
+/// A streaming client that stops reading cannot hold its admission past
+/// the request's budget: the events stop at the deadline, and the next
+/// request is admitted while the response is still open.
+#[tokio::test(flavor = "multi_thread")]
+async fn unread_sse_response_expires_and_releases_admission() {
+    // More deltas than the event channel holds.
+    let mut script = Script::new();
+    for utterance in 0..100 {
+        script = script.then(
+            Trigger::AfterSamples(utterance * 100 + 1),
+            Step::Segment(utterance, "w"),
+        );
+    }
+    let app = server(engine(FakeAsr::new(script), 1))
+        .with_timeout(Duration::from_millis(500))
+        .router();
+    let unread = app
+        .clone()
+        .oneshot(post(multipart(&wav(1), &[("stream", "true")])))
+        .await
+        .unwrap();
+    assert_eq!(unread.status(), StatusCode::OK);
+    let mut admitted = false;
+    for _ in 0..50 {
+        let (status, _) = send(&app, post(multipart(b"bad", &[]))).await;
+        if status == StatusCode::BAD_REQUEST {
+            admitted = true;
+            break;
+        }
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(admitted, "the unread response kept its admission");
+    drop(unread);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn upload_admission_is_bounded_and_released_on_disconnect() {
     let app = app(engine(FakeAsr::hello_world(), 1));
