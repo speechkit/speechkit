@@ -123,15 +123,19 @@ pub(crate) struct Shared {
     rate: SampleRate,
     /// When the clock started; playback times are nanoseconds since it.
     base: Instant,
-    /// From the callback: the index its latest buffer started at, when
-    /// that buffer starts playing, and how many samples it had.
-    clock: SeqCell<3>,
+    /// From the callback: the index after the last sample it took, and
+    /// when the last of those samples it played finishes playing. A buffer
+    /// of only silence moves neither, so the time stays that of real audio.
+    clock: SeqCell<2>,
     /// From the player thread: up to [`SKIPS`] ranges of indices the
     /// callback skips, as `from, to` pairs in index order; empty ones are
     /// `0, 0`.
     skip: SeqCell<{ 2 * SKIPS }>,
     /// The index the callback has reached, skipped samples included.
     popped: AtomicU64,
+    /// The highest index [`played_index`](Self::played_index) has
+    /// reported, so it never goes back.
+    heard: AtomicU64,
     /// A sound is playing, so silence is an underrun.
     expecting: AtomicBool,
     underruns: AtomicU64,
@@ -164,6 +168,7 @@ impl Shared {
             clock: SeqCell::new(),
             skip: SeqCell::new(),
             popped: AtomicU64::new(0),
+            heard: AtomicU64::new(0),
             expecting: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
             lost: AtomicBool::new(false),
@@ -183,13 +188,25 @@ impl Shared {
     }
 
     /// The index up to which the device has played: samples before it
-    /// have reached their playback time. Samples skipped within the
-    /// latest buffer count as if played, so this is never ahead of a
-    /// sound played after them.
+    /// have reached their playback time (D-06). Skipped samples count as
+    /// played once the audio before them has. It never goes back.
     fn played_index(&self) -> u64 {
-        let [start, at, count] = self.clock.read();
-        let elapsed = Duration::from_nanos(self.now().saturating_sub(at));
-        start + self.rate.frames_in(elapsed).min(count)
+        let [end, until] = self.clock.read();
+        let now = self.now();
+        let index = if now >= until {
+            end
+        } else {
+            // With a device latency longer than a buffer, more than the
+            // latest buffer is still to play. The device plays samples one
+            // after another, so count back from the end by the time left.
+            // Skipped samples and gaps take no playback time, so this errs
+            // on the side of less, and so does rounding the time left up
+            // to a whole frame.
+            let left =
+                (u128::from(until - now) * u128::from(self.rate.hz())).div_ceil(1_000_000_000);
+            end.saturating_sub(u64::try_from(left).unwrap_or(u64::MAX))
+        };
+        self.heard.fetch_max(index, Ordering::Relaxed).max(index)
     }
 
     /// Fills `out` from the ring, as the output callback does. Its first
@@ -223,8 +240,7 @@ impl Shared {
             }
         };
         skip(&mut |count| consumer.skip(count), &mut index);
-        let start = index;
-        let mut real = 0;
+        let mut real = 0_u64;
         let mut dry = false;
         let silent = fill_interleaved(out, channels, || {
             if dry {
@@ -246,22 +262,18 @@ impl Shared {
             .now()
             .saturating_add(u64::try_from(latency.as_nanos()).unwrap_or(0));
         let at = at.saturating_sub(u64::try_from(ago.as_nanos()).unwrap_or(u64::MAX));
-        self.clock.write([start, at, real]);
+        let until = if real > 0 {
+            let took = self.rate.duration_of(real);
+            at.saturating_add(u64::try_from(took.as_nanos()).unwrap_or(u64::MAX))
+        } else {
+            // Silence plays nothing of ours: skipped samples count once
+            // what came before them has played.
+            self.clock.read()[1]
+        };
+        self.clock.write([index, until]);
         if silent > 0 && self.expecting.load(Ordering::Relaxed) {
             self.underruns.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    /// Fills mono `out` as a callback whose audio has all been heard, for
-    /// the fake speaker.
-    fn render_played(
-        &self,
-        consumer: &mut impl Consumer<Item = f32>,
-        out: &mut [f32],
-        took: Duration,
-        skips: &mut Skips,
-    ) {
-        self.render(consumer, out, 1, Duration::ZERO, took, skips);
     }
 
     fn device_lost(&self) -> bool {
