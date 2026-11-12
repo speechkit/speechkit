@@ -3,7 +3,16 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-ignore = []
+ignore = [
+    # zip 2.4.2 is only sherpa-onnx-sys's build dependency, which unpacks
+    # sherpa-onnx's own prebuilt library archive at build time; speechkit
+    # never extracts a zip at run time. The fixes need zip 9, which only a
+    # new sherpa-onnx release can bring in. Remove these when it does.
+    { id = "RUSTSEC-2026-0367", reason = "zip: build-time only, extracting sherpa-onnx's own archive" },
+    { id = "RUSTSEC-2026-0368", reason = "zip: build-time only, extracting sherpa-onnx's own archive" },
+    { id = "RUSTSEC-2026-0369", reason = "zip: build-time only, extracting sherpa-onnx's own archive" },
+    { id = "RUSTSEC-2026-0429", reason = "zip: build-time only, extracting sherpa-onnx's own archive" },
+]
 
 [licenses]
 allow = [
