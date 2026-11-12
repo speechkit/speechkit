@@ -76,7 +76,7 @@ Fix: pass the request deadline to `forward` and send with it, as `pump` does; wh
 
 - [x] Resolve host names in `Server::start`, or reject them before the model loads.
 
-Both: `start` resolves and binds the first address that works, and the CLI resolves `--bind` before it builds the engine, so a bad name is a usage error. Note for tests: this machine's resolver answers every name, even `*.invalid`, so no test relies on a name failing to resolve.
+Both: `start` resolves and binds the first address that works (since the PR review, every address it resolves to: binding only `::1` refused clients that tried `127.0.0.1` first), and the CLI resolves `--bind` before it builds the engine, so a bad name is a usage error. Note for tests: this machine's resolver answers every name, even `*.invalid`, so no test relies on a name failing to resolve.
 
 Commit 976c662 stopped the missing-authentication warning for names that resolve to loopback, but `Server::start` (`crates/speechkit/src/server/mod.rs:72`) parses the address as a literal `SocketAddr`. The user waits for the model to load, then gets "invalid bind address".
 

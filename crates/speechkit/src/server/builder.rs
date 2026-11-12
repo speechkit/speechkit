@@ -75,8 +75,10 @@ impl Server {
 
     /// Where [`start`](Self::start) and [`run`](Self::run) listen: an
     /// address such as `0.0.0.0:8080`, or a host name and port such as
-    /// `localhost:8080`, which listens on the first of its addresses that
-    /// can be bound. Default: `127.0.0.1:8080`.
+    /// `localhost:8080`, which listens on every address it resolves to,
+    /// such as `127.0.0.1` and `::1`, all on the same port. An address that
+    /// cannot be bound is skipped with a warning, as long as one can be.
+    /// Default: `127.0.0.1:8080`.
     #[must_use]
     pub fn with_bind(mut self, address: impl Into<String>) -> Self {
         self.bind = address.into();

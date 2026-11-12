@@ -90,8 +90,7 @@ impl Server {
                 "the auth token is empty; an empty token would let anyone in".into(),
             ));
         }
-        let listener = bind(&self.bind).await?;
-        let local_addr = listener.local_addr().map_err(io_error)?;
+        let (local_addr, listeners) = bind(&self.bind).await?;
         let timeouts = Timeouts {
             header: self.header_timeout,
             write: self.write_timeout,
@@ -106,10 +105,9 @@ impl Server {
                     () = stop => {},
                 }
             };
-            serve_connections(listener, app, timeouts, signal).await;
+            serve_connections(listeners, app, timeouts, signal).await;
             Ok(())
         });
-        tracing::info!(%local_addr, "listening");
         Ok(RunningServer {
             local_addr,
             shutdown: Some(shutdown),
@@ -191,7 +189,9 @@ pub struct RunningServer {
 }
 
 impl RunningServer {
-    /// The address it listens on, useful after binding port 0.
+    /// The address it listens on, useful after binding port 0. A host name
+    /// that resolves to more than one address listens on each of them, on
+    /// this port; this is the first.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -235,7 +235,7 @@ struct Timeouts {
 /// timeout; serving each connection here fixes that, which stops clients
 /// that trickle their headers from holding connections open.
 async fn serve_connections(
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     app: Router,
     timeouts: Timeouts,
     signal: impl Future<Output = ()>,
@@ -251,9 +251,23 @@ async fn serve_connections(
     // is dropped, which closes its socket.
     let (close, closed) = tokio::sync::watch::channel(false);
     let mut signal = std::pin::pin!(signal);
+    // Which listener to try first, rotated so a busy one cannot starve
+    // the others.
+    let mut first = 0;
     loop {
+        let accept = std::future::poll_fn(|cx| {
+            let count = listeners.len();
+            first = (first + 1) % count;
+            (0..count)
+                .map(|offset| &listeners[(first + offset) % count])
+                .find_map(|listener| match listener.poll_accept(cx) {
+                    std::task::Poll::Ready(accepted) => Some(accepted),
+                    std::task::Poll::Pending => None,
+                })
+                .map_or(std::task::Poll::Pending, std::task::Poll::Ready)
+        });
         let stream = tokio::select! {
-            accepted = listener.accept() => match accepted {
+            accepted = accept => match accepted {
                 Ok((stream, _)) => stream,
                 Err(error) => {
                     // Usually too many open files; wait instead of spinning.
@@ -286,7 +300,7 @@ async fn serve_connections(
             }
         });
     }
-    drop(listener);
+    drop(listeners);
     let shutdown_timeout = timeouts.shutdown;
     if tokio::time::timeout(shutdown_timeout, graceful.shutdown())
         .await
@@ -300,24 +314,57 @@ async fn serve_connections(
     }
 }
 
-/// Listens on the first address `bind` names that can be bound: an address
-/// such as `0.0.0.0:8080`, or a name and port such as `localhost:8080`.
-async fn bind(bind: &str) -> Result<TcpListener, SpeechError> {
+/// Listens on every address `bind` names: an address such as
+/// `0.0.0.0:8080`, or a name and port such as `localhost:8080`, which can
+/// name both `127.0.0.1` and `::1`. Clients try a name's addresses in their
+/// own order, so listening on one only would refuse those that try another
+/// first. Port 0 picks a port for the first address and uses it for the
+/// rest. An address that cannot be bound is skipped, as long as one can be:
+/// a host without IPv6 still serves `localhost` over IPv4.
+///
+/// Returns the first listener's address, with every listener.
+async fn bind(bind: &str) -> Result<(SocketAddr, Vec<TcpListener>), SpeechError> {
     let invalid = |why: &dyn std::fmt::Display| {
         SpeechError::InvalidInput(format!("invalid bind address {bind:?}: {why}"))
     };
-    let addresses: Vec<SocketAddr> = tokio::net::lookup_host(bind)
+    let mut addresses: Vec<SocketAddr> = Vec::new();
+    for address in tokio::net::lookup_host(bind)
         .await
         .map_err(|e| invalid(&e))?
-        .collect();
-    let mut last = None;
-    for address in addresses {
-        match TcpListener::bind(address).await {
-            Ok(listener) => return Ok(listener),
-            Err(error) => last = Some(error),
+    {
+        if !addresses.contains(&address) {
+            addresses.push(address);
         }
     }
-    Err(last.map_or_else(|| invalid(&"it names no address"), io_error))
+    let mut listeners: Vec<TcpListener> = Vec::new();
+    let mut failures = Vec::new();
+    for mut address in addresses {
+        if address.port() == 0
+            && let Some(first) = listeners.first().and_then(|first| first.local_addr().ok())
+        {
+            address.set_port(first.port());
+        }
+        match TcpListener::bind(address).await {
+            Ok(listener) => listeners.push(listener),
+            Err(error) => failures.push((address, error)),
+        }
+    }
+    let [first, ..] = listeners.as_slice() else {
+        return Err(failures.pop().map_or_else(
+            || invalid(&"it names no address"),
+            |(_, error)| io_error(error),
+        ));
+    };
+    let local_addr = first.local_addr().map_err(io_error)?;
+    for (address, error) in failures {
+        tracing::warn!(%address, %error, "not listening on an address {bind:?} names");
+    }
+    for listener in &listeners {
+        if let Ok(local_addr) = listener.local_addr() {
+            tracing::info!(%local_addr, "listening");
+        }
+    }
+    Ok((local_addr, listeners))
 }
 
 fn io_error(error: std::io::Error) -> SpeechError {
