@@ -125,8 +125,10 @@ impl Server {
     /// requests. Connections still open after it are closed, which cancels
     /// their sessions as a disconnect does. It bounds the stop even when a
     /// client has stopped reading its response, which would otherwise hold
-    /// the connection open for as long as the client keeps it. Default:
-    /// 30 s.
+    /// the connection open for as long as the client keeps it. It applies
+    /// to [`start`](Self::start) and [`run`](Self::run); whatever serves
+    /// [`router`](Self::router) decides how its own shutdown waits.
+    /// Default: 30 s.
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
@@ -136,9 +138,13 @@ impl Server {
     /// How long a response may wait for the client to take more of it.
     /// A connection whose writes make no progress for this long is closed,
     /// which ends its request as a disconnect does and frees its session
-    /// slot. Without it, a client that stops reading would hold a slot for
-    /// as long as it kept its connection open. A slow client that keeps
-    /// reading is not affected. Default: 30 s.
+    /// slot. Without it, a client that stops reading would keep its
+    /// connection open for as long as it liked, and its slot until the
+    /// request's budget ran out, 120 s or more by default. A slow client
+    /// that keeps reading is not affected. It applies to
+    /// [`start`](Self::start) and [`run`](Self::run), which own the
+    /// connections; [`router`](Self::router) has none of its own. Default:
+    /// 30 s.
     #[must_use]
     pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
         self.write_timeout = timeout;
