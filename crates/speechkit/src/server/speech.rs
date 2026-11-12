@@ -185,6 +185,9 @@ pub(crate) async fn handle(
     };
     let body = match body {
         Ok(Json(body)) => body,
+        Err(rejection) if super::deadline::timed_out(&rejection) => {
+            return respond(StatusCode::REQUEST_TIMEOUT, super::deadline::TIMED_OUT);
+        }
         Err(rejection) => return respond(StatusCode::BAD_REQUEST, rejection.body_text()),
     };
     let request = match read(&body, state.server.max_speech_chars) {

@@ -62,7 +62,9 @@ struct Request {
 async fn read(mut multipart: Multipart) -> Result<Request, Box<Response>> {
     let failed = |error: MultipartError| {
         let status = error.status();
-        Box::new(if status == StatusCode::PAYLOAD_TOO_LARGE {
+        Box::new(if super::deadline::timed_out(&error) {
+            respond(StatusCode::REQUEST_TIMEOUT, super::deadline::TIMED_OUT)
+        } else if status == StatusCode::PAYLOAD_TOO_LARGE {
             respond(status, "the request body exceeds the server's size limit")
         } else {
             respond(status, format!("invalid multipart request: {error}"))

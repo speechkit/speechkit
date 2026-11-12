@@ -11,6 +11,7 @@ use super::{RunningServer, Server};
 use crate::{
     SampleRate, SpeechError,
     asr::{AsrBackend, AsrCapabilities, AsrEngine, AsrEvents, AsrOptions, AsrStream},
+    tts::{TtsBackend, TtsCapabilities, TtsEngine, TtsOptions, TtsStream, Voice},
 };
 
 /// A recognizer that hears nothing.
@@ -105,10 +106,52 @@ fn slow_bodies_are_cut_off() {
         .unwrap();
     let (response, waited) = read_to_close(stream);
     assert!(waited < Duration::from_secs(5), "{waited:?}");
-    assert!(
-        response.is_empty() || !response.starts_with("HTTP/1.1 200"),
-        "{response}"
-    );
+    // The client's fault, and worth retrying: not a 400 or a server error.
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    runtime.block_on(server.shutdown()).unwrap();
+}
+
+/// A synthesizer that is never reached: the body fails first.
+struct Unreached(TtsCapabilities);
+
+impl TtsBackend for Unreached {
+    fn name(&self) -> &'static str {
+        "unreached"
+    }
+
+    fn capabilities(&self) -> &TtsCapabilities {
+        &self.0
+    }
+
+    fn voices(&self) -> &[Voice] {
+        &[]
+    }
+
+    fn open(&self, _: &TtsOptions) -> Result<Box<dyn TtsStream>, SpeechError> {
+        Err(SpeechError::Unsupported("not reached".into()))
+    }
+}
+
+/// A speech request whose JSON body stalls is answered 408 too.
+#[test]
+fn a_slow_speech_body_is_a_request_timeout() {
+    let (runtime, server) = start(|server| {
+        server.body_timeout = Duration::from_millis(300);
+        server.tts = Some((
+            TtsEngine::new(Unreached(TtsCapabilities::new(SampleRate::HZ_16000, 100))),
+            "unreached".into(),
+        ));
+    });
+    let mut stream = connect(server.local_addr());
+    stream
+        .write_all(
+            b"POST /v1/audio/speech HTTP/1.1\r\nHost: localhost\r\n\
+              Content-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"input\": \"",
+        )
+        .unwrap();
+    let (response, waited) = read_to_close(stream);
+    assert!(waited < Duration::from_secs(5), "{waited:?}");
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
     runtime.block_on(server.shutdown()).unwrap();
 }
 

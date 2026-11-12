@@ -28,6 +28,17 @@ use tokio::time::Sleep;
 #[error("the request body did not arrive within {0:?}")]
 struct TimedOut(Duration);
 
+/// Whether `error`, or an error it wraps, is a request body that missed
+/// its deadline. axum reports a failed body read as a bad request or, in
+/// a multipart upload, as an internal error; this is neither.
+pub(crate) fn timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |error| error.source())
+        .any(<dyn std::error::Error>::is::<TimedOut>)
+}
+
+/// The message a request whose body missed its deadline is answered with.
+pub(crate) const TIMED_OUT: &str = "the request body did not arrive in time";
+
 /// A request body that fails once `deadline` passes.
 struct DeadlineBody {
     inner: Body,
