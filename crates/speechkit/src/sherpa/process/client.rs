@@ -7,6 +7,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     thread::JoinHandle,
@@ -91,7 +92,27 @@ impl WorkerCommand {
 enum Reply {
     Done,
     Error(WireError),
+    /// The worker exited, or its pipes broke.
     Gone(String),
+    /// The worker is running but did not take or answer the request in
+    /// time.
+    Hung(String),
+}
+
+/// What a pool counts about its workers, for
+/// [`counters`](AsrBackend::counters).
+#[derive(Debug, Default)]
+struct Counts {
+    started: AtomicU64,
+    start_failures: AtomicU64,
+    /// Workers that exited on their own, in use or idle.
+    crashed: AtomicU64,
+    /// Workers killed for not starting or answering in time.
+    killed: AtomicU64,
+}
+
+fn bump(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Where the reader thread sends the events of the stream in progress.
@@ -112,10 +133,28 @@ struct Worker {
     reader: Option<JoinHandle<()>>,
     /// The worker is gone, or a call to it failed.
     broken: bool,
+    counts: Arc<Counts>,
 }
 
 impl Worker {
-    fn start(command: &WorkerCommand) -> Result<(Self, String, AsrCapabilities), SpeechError> {
+    /// Starts a worker, counting whether it started.
+    fn start(
+        command: &WorkerCommand,
+        counts: &Arc<Counts>,
+    ) -> Result<(Self, String, AsrCapabilities), SpeechError> {
+        let started = Self::launch(command, counts);
+        bump(if started.is_ok() {
+            &counts.started
+        } else {
+            &counts.start_failures
+        });
+        started
+    }
+
+    fn launch(
+        command: &WorkerCommand,
+        counts: &Arc<Counts>,
+    ) -> Result<(Self, String, AsrCapabilities), SpeechError> {
         let program = &command.program;
         let mut process = Command::new(program)
             .args(&command.args)
@@ -164,6 +203,7 @@ impl Worker {
         let hello = match hello.recv_timeout(timeout) {
             Ok(hello) => hello,
             Err(RecvTimeoutError::Timeout) => {
+                bump(&counts.killed);
                 let status = abandon(process, reader);
                 return Err(crashed(format!(
                     "it did not start within {timeout:?} ({status})"
@@ -211,6 +251,7 @@ impl Worker {
             link,
             reader: Some(reader),
             broken: false,
+            counts: counts.clone(),
         };
         Ok((worker, name, caps))
     }
@@ -232,6 +273,12 @@ impl Worker {
             Reply::Done => Ok(()),
             Reply::Error(error) => Err(error.into()),
             Reply::Gone(detail) => {
+                bump(&self.counts.crashed);
+                self.broken = true;
+                Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
+            }
+            Reply::Hung(detail) => {
+                bump(&self.counts.killed);
                 self.broken = true;
                 Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
             }
@@ -253,7 +300,7 @@ impl Worker {
         match self.written.recv_timeout(timeout) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(Reply::Gone(error.to_string())),
-            Err(RecvTimeoutError::Timeout) => Err(Reply::Gone(format!(
+            Err(RecvTimeoutError::Timeout) => Err(Reply::Hung(format!(
                 "it did not take the request within {timeout:?}"
             ))),
             Err(RecvTimeoutError::Disconnected) => {
@@ -279,13 +326,13 @@ impl Worker {
             }
             let now = Instant::now();
             if now.duration_since(started) >= timeout {
-                return Reply::Gone(format!("it did not answer within {timeout:?}"));
+                return Reply::Hung(format!("it did not answer within {timeout:?}"));
             }
             let stopping = lock(&self.link)
                 .as_ref()
                 .is_some_and(AsrEvents::is_stopping);
             if stopping && now.duration_since(*stopped.get_or_insert(now)) >= STOPPED_GRACE {
-                return Reply::Gone("it did not answer after its session stopped".into());
+                return Reply::Hung("it did not answer after its session stopped".into());
             }
         }
     }
@@ -394,6 +441,7 @@ fn read(mut output: BufReader<ChildStdout>, link: &Link, replies: &mpsc::Sender<
 struct Pool {
     command: WorkerCommand,
     idle: Mutex<Vec<Worker>>,
+    counts: Arc<Counts>,
 }
 
 impl Pool {
@@ -408,9 +456,10 @@ impl Pool {
             if worker.is_alive() {
                 return Ok(worker);
             }
+            bump(&self.counts.crashed);
             tracing::debug!(backend = %name, "dropped an idle worker process that had exited");
         }
-        let (worker, _, _) = Worker::start(&self.command)?;
+        let (worker, _, _) = Worker::start(&self.command, &self.counts)?;
         tracing::debug!(backend = %name, "started a worker process");
         Ok(worker)
     }
@@ -478,11 +527,13 @@ impl IsolatedAsr {
     /// [start timeout](WorkerCommand::with_start_timeout); or the error the
     /// worker reports.
     pub fn spawn_command(command: WorkerCommand) -> Result<Self, SpeechError> {
-        let (worker, name, caps) = Worker::start(&command)?;
+        let counts = Arc::default();
+        let (worker, name, caps) = Worker::start(&command, &counts)?;
         Ok(Self {
             pool: Arc::new(Pool {
                 command,
                 idle: Mutex::new(vec![worker]),
+                counts,
             }),
             name: format!("{name}@worker"),
             caps,
@@ -509,6 +560,20 @@ impl AsrBackend for IsolatedAsr {
 
     fn capabilities(&self) -> &AsrCapabilities {
         &self.caps
+    }
+
+    /// `workers_started`, `worker_start_failures`, `workers_crashed`
+    /// (exited on their own, in use or idle), and `workers_killed` (did not
+    /// start or answer in time), counting the first worker too.
+    fn counters(&self) -> Vec<(&'static str, u64)> {
+        let counts = &self.pool.counts;
+        let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        vec![
+            ("workers_started", read(&counts.started)),
+            ("worker_start_failures", read(&counts.start_failures)),
+            ("workers_crashed", read(&counts.crashed)),
+            ("workers_killed", read(&counts.killed)),
+        ]
     }
 
     fn open(

@@ -626,7 +626,8 @@ sherpa::Inference::default().with_provider(Provider::Cuda).with_threads(4)
 sherpa::Provider::{Cpu, Cuda, CoreMl}.is_supported()
 
 sherpa::process::IsolatedAsr::spawn(worker, &AsrConfig)
-//  the model in a child process: a native crash fails one session, not the app
+//  the model in a child process: a native crash fails one session, not the app;
+//  counters(): workers_started, worker_start_failures, workers_crashed, workers_killed
 sherpa::process::worker_main()                // the whole worker binary
 ```
 
@@ -694,6 +695,7 @@ trait AsrBackend: Send + Sync + 'static {
     fn capabilities(&self) -> &AsrCapabilities;
     fn open(&self, options: &AsrOptions, events: AsrEvents)
         -> Result<Box<dyn AsrStream>, SpeechError>;
+    fn counters(&self) -> Vec<(&'static str, u64)> { Vec::new() }  // listed on /health
 }
 trait AsrStream: Send {
     fn accept(&mut self, samples: &[f32]) -> Result<(), SpeechError>;

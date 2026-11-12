@@ -281,6 +281,38 @@ async fn health_and_models() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json(&body)["data"][0]["id"], "fake-model");
+    assert!(health.get("counters").is_none(), "{health}");
+}
+
+/// A backend's counters, such as `IsolatedAsr`'s worker crashes, are on
+/// `/health`, so a crash loop is visible to whatever polls it.
+#[tokio::test(flavor = "multi_thread")]
+async fn health_reports_the_backends_counters() {
+    struct Counted(FakeAsr);
+    impl speechkit::asr::AsrBackend for Counted {
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+        fn capabilities(&self) -> &AsrCapabilities {
+            self.0.capabilities()
+        }
+        fn open(
+            &self,
+            options: &speechkit::asr::AsrOptions,
+            events: speechkit::asr::AsrEvents,
+        ) -> Result<Box<dyn speechkit::asr::AsrStream>, SpeechError> {
+            self.0.open(options, events)
+        }
+        fn counters(&self) -> Vec<(&'static str, u64)> {
+            vec![("workers_started", 3), ("workers_crashed", 2)]
+        }
+    }
+    let app = app(AsrEngine::new(Counted(FakeAsr::hello_world())));
+    let (status, body) = send(&app, Request::get("/health").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let health = json(&body);
+    assert_eq!(health["counters"]["workers_started"], 3, "{health}");
+    assert_eq!(health["counters"]["workers_crashed"], 2, "{health}");
 }
 
 /// A router with no engine fails its health check.

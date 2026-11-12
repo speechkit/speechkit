@@ -110,6 +110,12 @@ impl AsrEngine {
         self.inner.backend.capabilities()
     }
 
+    /// The backend's [counters](AsrBackend::counters), such as worker
+    /// crashes.
+    pub fn counters(&self) -> Vec<(&'static str, u64)> {
+        self.inner.backend.counters()
+    }
+
     /// The most sessions that run at once, across every clone.
     pub fn max_sessions(&self) -> usize {
         self.inner.max_sessions.get()
