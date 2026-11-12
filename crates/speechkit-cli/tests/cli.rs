@@ -402,7 +402,8 @@ fn failures_give_their_code_and_message() {
             args: args(&["transcribe", "/nonexistent/a.wav"]),
             backends: Box::new(Fake(FakeAsr::hello_world())),
             code: speechkit_cli::EXIT_INPUT,
-            says: &["/nonexistent/a.wav", "No such file"],
+            // The OS's own wording follows, which differs on Windows.
+            says: &["cannot decode audio", "/nonexistent/a.wav"],
             not: &[],
             gate: None,
         },
