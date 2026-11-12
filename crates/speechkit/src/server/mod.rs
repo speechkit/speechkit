@@ -130,6 +130,14 @@ async fn health(State(state): State<state::Shared>) -> Response {
         body["model"] = json!(id);
         body["active_sessions"] = json!(asr.active_sessions());
         body["max_sessions"] = json!(asr.max_sessions());
+        let counters = asr.counters();
+        if !counters.is_empty() {
+            body["counters"] = counters
+                .into_iter()
+                .map(|(name, count)| (name.to_owned(), json!(count)))
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
     }
     if let Some((tts, id)) = &state.server.tts {
         body["speech"] = json!({

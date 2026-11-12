@@ -426,10 +426,43 @@ fn a_session_on_a_worker_that_hangs_while_starting_fails() {
         begun.elapsed()
     );
     assert_retryable(&error);
+    let counted = counters(&engine);
+    assert_eq!(counted["worker_start_failures"], 1, "{counted:?}");
+    assert_eq!(counted["workers_killed"], 1, "{counted:?}");
     drop(first);
     assert!(eventually(Duration::from_secs(10), || engine
         .active_sessions()
         == 0));
+}
+
+/// The engine's counters, by name.
+fn counters(engine: &AsrEngine) -> std::collections::HashMap<&'static str, u64> {
+    engine.counters().into_iter().collect()
+}
+
+/// The counters count worker starts, crashes (including a worker that
+/// exited while idle), and kills, so a crash loop or a hanging model shows
+/// on the server's `/health`.
+#[test]
+fn counters_count_starts_crashes_and_kills() {
+    let (backend, _dir) = backend();
+    let engine = AsrEngine::new(backend.with_call_timeout(Duration::from_millis(500)));
+    let idle = || eventually(Duration::from_secs(10), || engine.active_sessions() == 0);
+    assert_eq!(counters(&engine)["workers_started"], 1);
+    assert_retryable(&run(&engine, &["abort"]).expect_err("the worker crashed"));
+    assert!(idle());
+    assert_retryable(&run(&engine, &["hang"]).expect_err("the worker hung"));
+    assert!(idle());
+    run(&engine, &["exit"]).unwrap();
+    assert!(idle());
+    std::thread::sleep(Duration::from_millis(500));
+    run(&engine, &[]).unwrap();
+    let counted = counters(&engine);
+    // The first, and one after each worker that went away.
+    assert_eq!(counted["workers_started"], 4, "{counted:?}");
+    assert_eq!(counted["workers_crashed"], 2, "{counted:?}");
+    assert_eq!(counted["workers_killed"], 1, "{counted:?}");
+    assert_eq!(counted["worker_start_failures"], 0, "{counted:?}");
 }
 
 #[test]

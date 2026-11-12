@@ -26,6 +26,14 @@ pub trait AsrBackend: Send + Sync + 'static {
         options: &AsrOptions,
         events: AsrEvents,
     ) -> Result<Box<dyn AsrStream>, SpeechError>;
+
+    /// Counts the backend keeps about itself for health reporting, such as
+    /// how many worker processes crashed, each a name and a total since the
+    /// backend was made. The server lists them on `/health`. None by
+    /// default.
+    fn counters(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
+    }
 }
 
 /// A shared backend, so an `Arc<dyn AsrBackend>` can run an engine.
@@ -45,6 +53,10 @@ impl<B: AsrBackend + ?Sized> AsrBackend for Arc<B> {
     ) -> Result<Box<dyn AsrStream>, SpeechError> {
         (**self).open(options, events)
     }
+
+    fn counters(&self) -> Vec<(&'static str, u64)> {
+        (**self).counters()
+    }
 }
 
 /// A boxed backend, so a `Box<dyn AsrBackend>` can run an engine.
@@ -63,6 +75,10 @@ impl<B: AsrBackend + ?Sized> AsrBackend for Box<B> {
         events: AsrEvents,
     ) -> Result<Box<dyn AsrStream>, SpeechError> {
         (**self).open(options, events)
+    }
+
+    fn counters(&self) -> Vec<(&'static str, u64)> {
+        (**self).counters()
     }
 }
 
