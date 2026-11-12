@@ -1,0 +1,18 @@
+# cargo-nextest settings. CI runs `cargo nextest run --profile ci`; locally,
+# `cargo nextest run --workspace --all-features` uses the default profile.
+# nextest runs each test in its own process, and does not run doctests:
+# CI runs those with `cargo test --doc`.
+
+[profile.ci]
+# Run every test after a failure.
+fail-fast = false
+# Retry a failing test twice. One that then passes is reported as FLAKY in
+# the summary, so a timing-dependent test shows up instead of failing the
+# job at random, or passing on a rerun nobody records.
+retries = 2
+# Report a test as slow after 60 s, and kill it after 5 minutes, so one
+# that hangs fails on its own instead of holding the job until the
+# workflow's timeout.
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Print a failure's output when it happens and again at the end.
+failure-output = "immediate-final"
