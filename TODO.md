@@ -11,7 +11,7 @@ Each item says how sure it is:
 
 - `cargo fmt --all -- --check`: passes.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passes.
-- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored. After Phase 2: 510 passed, 0 failed, 43 ignored. After Phase 4: 528 passed, 0 failed, 45 ignored.
+- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored. After Phase 2: 510 passed, 0 failed, 43 ignored. After Phase 4: 528 passed, 0 failed, 45 ignored. After Phase 5: 531 passed, 0 failed, 45 ignored.
 - After Phase 2, `cargo doc` with `-D warnings` and `cargo hack check -p speechkit --each-feature --no-dev-deps` also pass.
 - Not run yet: `cargo deny check`, the loom tests, the `#[ignore]` model tests. Item 7 changes session synchronization, but not the `slots` or `history` code the loom tests model.
 
@@ -261,5 +261,5 @@ Each finding is one case of a wider gap. These are worth doing once, rather than
 ### Phase 5: worth considering, not urgent
 
 - [ ] `cargo nextest` in CI: per-test timeouts and retries reported as flaky rather than hidden, and faster start on macOS.
-- [ ] A `speechkit doctor` or `serve --check` that loads the model, binds, and exits, so a deployment can tell a bad flag from a slow load before taking traffic.
-- [ ] Health reporting for `IsolatedAsr`: worker starts, crashes, and kills as counters, exposed on `/health`, so a crash loop is visible.
+- [x] A `speechkit doctor` or `serve --check` that loads the model, binds, and exits, so a deployment can tell a bad flag from a slow load before taking traffic. Done as `serve --check` (5d1bab7): it builds the backends, binds, and exits 0, and gives the usual exit code and message otherwise. Cloud backends are configured but not contacted.
+- [x] Health reporting for `IsolatedAsr`: worker starts, crashes, and kills as counters, exposed on `/health`, so a crash loop is visible. Done in 034f287: `workers_started`, `worker_start_failures`, `workers_crashed` and `workers_killed`, under `counters` on `/health`. Since `sherpa` and `server` never use each other, they go through a new provided method, `AsrBackend::counters`, which returns nothing by default. Synthesis backends have no counters yet; none has workers.
