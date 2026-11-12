@@ -359,6 +359,51 @@ pub fn a03_late_events_discarded() {
     assert!(failure.confirmed.segments.is_empty());
 }
 
+/// A-03: events that arrive while a failing session stops its stream are
+/// discarded too, whether a call failed or the stream reported the failure
+/// between calls: neither readers nor the failure's confirmed transcript
+/// see them.
+pub fn a03_late_events_after_a_failure_discarded() {
+    let boom = || SpeechError::backend("fake", true, "boom");
+    let failing_call = Script::new()
+        .then(Trigger::AfterSamples(1), Step::Segment(0, "kept"))
+        .then(Trigger::AfterSamples(1), Step::Fail(boom()))
+        .then(Trigger::OnCancel, Step::Segment(1, "late"));
+    // The call blocks until the stream's own thread has reported the
+    // failure, which the test sees as pushes being refused.
+    let gate = Gate::new();
+    let failing_between_calls = Script::new()
+        .then(Trigger::AfterSamples(1), Step::Segment(0, "kept"))
+        .then(
+            Trigger::AfterSamples(1),
+            Step::FailLater(Duration::ZERO, boom()),
+        )
+        .then(
+            Trigger::AfterSamples(1),
+            Step::BlockUntilReleased(gate.clone()),
+        )
+        .then(Trigger::OnCancel, Step::Segment(1, "late"));
+    for (script, gate) in [(failing_call, None), (failing_between_calls, Some(gate))] {
+        let engine = engine(FakeAsr::new(script), AsrLimits::default());
+        let session = engine
+            .start(RATE, options(), Duration::from_secs(10))
+            .expect("start");
+        let mut updates = session.updates();
+        session.push(tone(1_600), secs(10)).expect("push");
+        if let Some(gate) = gate {
+            assert!(gate.wait_entered(1, SETTLE));
+            assert!(eventually(SETTLE, || session.try_push(tone(1)).is_err()));
+            gate.release();
+        }
+        let failure = session.finish(secs(10)).expect_err("the backend fails");
+        assert!(failure.error.retryable(), "{:?}", failure.error);
+        assert_eq!(failure.confirmed.text(), "kept");
+        let (segments, _) = drain(&mut updates);
+        let texts: Vec<_> = segments.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["kept"]);
+    }
+}
+
 /// A-11: the history is bounded, partial results not yet committed
 /// included; reaching the bound fails with `Capacity` and keeps what fit.
 pub fn a11_bounded() {
@@ -748,6 +793,10 @@ pub const ALL: &[(&str, fn())] = &[
     ("a02_backpressure_full", a02_backpressure_full),
     ("a02_push_wait_wakes_on_close", a02_push_wait_wakes_on_close),
     ("a03_late_events_discarded", a03_late_events_discarded),
+    (
+        "a03_late_events_after_a_failure_discarded",
+        a03_late_events_after_a_failure_discarded,
+    ),
     ("a04_failure_keeps_confirmed", a04_failure_keeps_confirmed),
     ("a05_readers", a05_readers),
     ("a05_slow_reader", a05_slow_reader),

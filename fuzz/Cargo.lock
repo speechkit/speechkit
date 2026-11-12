@@ -746,11 +746,12 @@ dependencies = [
 
 [[package]]
 name = "speechkit"
-version = "0.2.1"
+version = "0.5.0"
 dependencies = [
  "axum",
  "futures",
  "hound",
+ "http-body",
  "hyper",
  "hyper-util",
  "loom",
@@ -759,7 +760,6 @@ dependencies = [
  "symphonia",
  "thiserror",
  "tokio",
- "tower-http",
  "tracing",
  "unicode-segmentation",
  "zeroize",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "speechkit-testkit"
-version = "0.2.1"
+version = "0.5.0"
 dependencies = [
  "speechkit",
 ]
@@ -1011,9 +1011,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "libc",
  "mio",
@@ -1045,22 +1045,6 @@ dependencies = [
  "futures-util",
  "pin-project-lite",
  "sync_wrapper",
- "tokio",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
-dependencies = [
- "bitflags",
- "bytes",
- "http",
- "http-body",
- "pin-project-lite",
  "tokio",
  "tower-layer",
  "tower-service",

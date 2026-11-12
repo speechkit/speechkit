@@ -30,7 +30,7 @@ Rule IDs such as A-01, T-05, and D-02 name the contract checks in [`speechkit-te
 
 **Audio files are untrusted.** `audio::read` and `audio::decode` enforce a maximum duration while decoding, for WAV and every other format. Together with the supported sample-rate range, this bounds decoded mono sample storage; it is not a separate byte limit. Both decoders are fuzzed nightly (the `decode_audio` and `read_wav_bytes` targets) with a 460 MB allocation cap.
 
-**Model files are trusted.** sherpa-onnx and ONNX Runtime parse them in native code. Layouts are checked before the native library is called, so a missing or empty file is an error, not a crash. But a malicious or corrupt model can still crash the process, and some corrupt files make the native library abort (see `crates/speechkit/tests/sherpa_corrupt_model.rs`). Load models only from sources you trust. To survive a native crash, run the recognizer in worker processes with `IsolatedAsr` and `speechkit-worker`: a crash then fails only the session on that worker, instead of the host.
+**Model files are trusted.** sherpa-onnx and ONNX Runtime parse them in native code. Layouts are checked before the native library is called, so a missing or empty file is an error, not a crash. But a malicious or corrupt model can still crash the process, and some corrupt files make the native library abort (see `crates/speechkit/tests/sherpa_corrupt_model.rs`). Load models only from sources you trust. To survive a native crash, run the recognizer in worker processes with `IsolatedAsr` and `speechkit-worker`: a crash then fails only the session on that worker, instead of the host. A worker that hangs is killed too: one that does not finish loading within its start timeout (120 s by default), or does not take and answer a request within its call timeout (60 s by default).
 
 **Secrets** (API keys, the server's token) are held in `Secret`, whose `Debug` and `Display` print `Secret(***)`. Nothing is logged above `trace` that could contain audio, transcripts, synthesized text, or secrets (A-12, T-05, and the logging tests).
 
@@ -43,11 +43,11 @@ Rule IDs such as A-01, T-05, and D-02 name the contract checks in [`speechkit-te
 | Threat | Defense |
 |---|---|
 | Huge uploads | The body is limited while it streams in (25 MiB by default); larger requests get 413 without being buffered. Speech input is limited to 4096 characters. |
-| Slow clients holding connections (slowloris) | Headers must arrive within 30 s and the whole body within 120 s; the connection is closed otherwise. |
+| Slow clients holding connections (slowloris) | Headers must arrive within 30 s and the whole body within 120 s, however steadily a client trickles; the connection is closed otherwise. A connection whose response makes no progress for 30 s (`with_write_timeout`) is closed, which frees its session slot; a slow client that keeps reading is not cut off. Stopping the server waits at most 30 s (`with_shutdown_timeout`) for open connections, then closes them, so a client that stops reading cannot hold up a shutdown. |
 | Too much concurrent work | Each engine has fixed session slots (8 by default). The router also admits at most that many transcription requests before reading or decoding their uploads, rejecting excess work with 503. A detached decoder retains its admission permit until it exits. |
-| Long synthesis or transcription | Request budgets include opening the session; transcription budgets start before upload and decode (120 s before the duration is known when no timeout is configured). Synthesis queue sends also expire, so unread responses cannot hold a slot forever. Disconnects cancel sessions; uninterruptible work retains its slot until it returns. |
+| Long synthesis or transcription | Request budgets include opening the session; transcription budgets start before upload and decode (120 s before the duration is known when no timeout is configured). Synthesized audio and streamed transcription events are sent within the same budget, so a response nobody reads cannot hold a slot or an admission past it. Disconnects cancel sessions; uninterruptible work retains its slot until it returns. |
 | Malformed requests | Multipart and JSON parsing never panic; the `server_request` fuzz target sends arbitrary bodies to every endpoint nightly. Unsupported formats (WebM, Opus, MP3 output) are refused with a clear 4xx. |
-| Unauthenticated use | With `Server::with_auth` (`--auth-token-env` in the CLI), every `/v1/` route requires a bearer token, compared in constant time. Without it, the server warns when bound to anything but loopback. |
+| Unauthenticated use | With `Server::with_auth` (`--auth-token-env` in the CLI), every `/v1/` route requires a bearer token, compared in constant time; an empty token is refused. Without it, the server warns when bound to anything but loopback. |
 | Error messages leaking internals | Errors use OpenAI's JSON shape. Backend errors name the backend and a short cause. OpenAI error bodies are reduced to their `type` and `code`; DashScope error messages are passed on, trimmed to 300 characters. |
 
 What it does **not** do:
@@ -60,6 +60,10 @@ What it does **not** do:
 ### Cloud backends
 
 Requests go only to the configured endpoints, over HTTPS or WSS with certificate checks (rustls and the Mozilla root store); plain `http://` and `ws://` are accepted so tests and local servers work, and should not be used across a network. Redirects are not followed, so a key is never sent to a host you did not name. Streamed HTTP transcription (server-sent events) publishes each partial immediately and retains only the latest accumulated text, with a total wire-byte limit. Buffered response bodies are size-limited, streamed audio is consumed as it arrives, and WebSocket messages are capped at 1 MiB.
+
+### Releases
+
+A release is built and published only from a tag whose commit passed CI, by a workflow whose actions are pinned to commits. Each GitHub release lists the SHA-256 of every binary archive in `SHA256SUMS`, and the archives carry signed build provenance: check one with `gh attestation verify <archive> --repo speechkit/speechkit`.
 
 ### Reviewing this model
 

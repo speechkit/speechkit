@@ -1,6 +1,6 @@
 //! WAV reading and writing with hound.
 
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use super::{DecodeLimits, invalid, to_session_range};
 use crate::{AudioBuffer, SampleRate, SpeechError};
@@ -32,10 +32,107 @@ fn wav_error(error: hound::Error) -> Error {
     }
 }
 
+/// The data length a streaming writer puts in the header when it does not
+/// know the length yet: the server's `/v1/audio/speech`, and ffmpeg writing
+/// to a pipe.
+const UNKNOWN_LENGTH: u32 = u32::MAX;
+
 /// Reads a WAV: integer PCM of any depth up to 32 bits, or 32-bit float,
 /// with any number of channels, averaged to mono. A file that ends early
-/// keeps the whole frames before the cut.
-pub(super) fn read(source: impl Read, limits: DecodeLimits) -> Result<AudioBuffer, Error> {
+/// keeps the whole frames before the cut, and one whose header says the
+/// length is unknown is read to its end.
+pub(super) fn read(
+    mut source: impl Read + Seek,
+    limits: DecodeLimits,
+) -> Result<AudioBuffer, Error> {
+    let known = known_length(&mut source);
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| invalid(format_args!("WAV: {e}")))?;
+    match known {
+        Some((offset, length)) => read_header(
+            Patched {
+                inner: source,
+                position: 0,
+                offset,
+                bytes: length.to_le_bytes(),
+            },
+            limits,
+        ),
+        None => read_header(source, limits),
+    }
+}
+
+/// Where the data chunk's length field is, and the length to read there,
+/// when the header says the length is unknown: what is left of the source,
+/// in whole frames. `None` for any other file, which hound then reads, or
+/// rejects, as it is.
+fn known_length(source: &mut (impl Read + Seek)) -> Option<(u64, u32)> {
+    let total = source.seek(SeekFrom::End(0)).ok()?;
+    // After "RIFF", its length, and "WAVE".
+    let mut position = 12_u64;
+    let mut block_align = None;
+    loop {
+        source.seek(SeekFrom::Start(position)).ok()?;
+        let mut header = [0_u8; 8];
+        source.read_exact(&mut header).ok()?;
+        let [a, b, c, d, l0, l1, l2, l3] = header;
+        let length = u32::from_le_bytes([l0, l1, l2, l3]);
+        let body = position + 8;
+        match &[a, b, c, d] {
+            b"fmt " => {
+                // The block alignment, bytes per frame, is at offset 12.
+                let mut fmt = [0_u8; 14];
+                source.read_exact(&mut fmt).ok()?;
+                block_align = Some(u16::from_le_bytes([fmt[12], fmt[13]]));
+            }
+            b"data" => {
+                if length != UNKNOWN_LENGTH {
+                    return None;
+                }
+                let frame = u64::from(block_align.filter(|&align| align > 0)?);
+                let left = total
+                    .saturating_sub(body)
+                    .min(u64::from(UNKNOWN_LENGTH - 1));
+                let length = u32::try_from(left - left % frame).ok()?;
+                return Some((position + 4, length));
+            }
+            _ => {}
+        }
+        // Chunks are padded to an even length.
+        position = body + u64::from(length) + u64::from(length % 2);
+    }
+}
+
+/// A reader that reads `bytes` in place of the four at `offset`, so hound
+/// sees a length without the file being copied.
+struct Patched<R> {
+    inner: R,
+    /// Where the next byte read comes from.
+    position: u64,
+    offset: u64,
+    bytes: [u8; 4],
+}
+
+impl<R: Read> Read for Patched<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        let start = self.position;
+        let end = start + read as u64;
+        for at in self.offset.max(start)..(self.offset + 4).min(end) {
+            if let (Ok(into), Ok(from)) = (
+                usize::try_from(at - start),
+                usize::try_from(at - self.offset),
+            ) {
+                buffer[into] = self.bytes[from];
+            }
+        }
+        self.position = end;
+        Ok(read)
+    }
+}
+
+fn read_header(source: impl Read, limits: DecodeLimits) -> Result<AudioBuffer, Error> {
     let mut reader = hound::WavReader::new(source).map_err(wav_error)?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
@@ -264,6 +361,46 @@ mod tests {
         assert_eq!(audio.samples.len(), 3);
     }
 
+    /// `bytes` with both size fields set to "unknown", as a streaming
+    /// writer leaves them: ours, or ffmpeg writing to a pipe.
+    fn streaming(mut bytes: Vec<u8>) -> Vec<u8> {
+        let data = bytes.windows(4).position(|w| w == b"data").unwrap();
+        bytes[4..8].copy_from_slice(&[0xFF; 4]);
+        bytes[data + 4..data + 8].copy_from_slice(&[0xFF; 4]);
+        bytes
+    }
+
+    #[test]
+    fn a_streaming_header_reads_to_the_end() {
+        let samples = [16_384_i16, -16_384, 8_192];
+        let bytes = streaming(write(spec(1, 16, hound::SampleFormat::Int), &samples));
+        let audio = decode(&bytes, DecodeLimits::default()).unwrap();
+        assert_eq!(audio.samples, [0.5, -0.5, 0.25]);
+        // A stream cut mid-frame keeps the whole frames.
+        let stereo = write(spec(2, 16, hound::SampleFormat::Int), &[0_i16; 8]);
+        let mut cut = streaming(stereo);
+        cut.truncate(cut.len() - 3);
+        assert_eq!(
+            decode(&cut, DecodeLimits::default()).unwrap().samples.len(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_streaming_header_keeps_the_duration_limit() {
+        let limits = DecodeLimits::new(std::time::Duration::from_secs(1));
+        let long = streaming(write(
+            spec(1, 16, hound::SampleFormat::Int),
+            &vec![0_i16; 16_001],
+        ));
+        assert!(decode(&long, limits).is_err());
+        let exact = streaming(write(
+            spec(1, 16, hound::SampleFormat::Int),
+            &vec![0_i16; 16_000],
+        ));
+        assert_eq!(decode(&exact, limits).unwrap().samples.len(), 16_000);
+    }
+
     #[test]
     fn the_duration_limit_uses_the_header() {
         let limits = DecodeLimits::new(std::time::Duration::from_secs(1));
@@ -289,8 +426,18 @@ mod tests {
 
     proptest! {
         #[test]
-        fn round_trip_within_one_step(samples in prop::collection::vec(-1.0_f32..=1.0, 0..2_000)) {
-            let original = buffer(samples);
+        fn round_trip_within_one_step(
+            samples in prop::collection::vec(-1.0_f32..=1.0, 0..2_000),
+            rate in prop::sample::select(vec![
+                SampleRate::HZ_8000,
+                SampleRate::HZ_16000,
+                SampleRate::HZ_22050,
+                SampleRate::HZ_24000,
+                SampleRate::HZ_44100,
+                SampleRate::HZ_48000,
+            ]),
+        ) {
+            let original = AudioBuffer::new(rate, samples);
             let decoded = decode(&encode_wav(&original).unwrap(), DecodeLimits::default()).unwrap();
             prop_assert_eq!(decoded.sample_rate, original.sample_rate);
             prop_assert_eq!(decoded.samples.len(), original.samples.len());

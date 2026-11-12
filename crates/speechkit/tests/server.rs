@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use speechkit::server::Server;
 use speechkit::{
-    AudioBuffer, SampleRate,
+    AudioBuffer, SampleRate, SpeechError,
     asr::{AsrCapabilities, AsrEngine, AsrLimits},
     audio::encode_wav,
 };
@@ -281,6 +281,38 @@ async fn health_and_models() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json(&body)["data"][0]["id"], "fake-model");
+    assert!(health.get("counters").is_none(), "{health}");
+}
+
+/// A backend's counters, such as `IsolatedAsr`'s worker crashes, are on
+/// `/health`, so a crash loop is visible to whatever polls it.
+#[tokio::test(flavor = "multi_thread")]
+async fn health_reports_the_backends_counters() {
+    struct Counted(FakeAsr);
+    impl speechkit::asr::AsrBackend for Counted {
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+        fn capabilities(&self) -> &AsrCapabilities {
+            self.0.capabilities()
+        }
+        fn open(
+            &self,
+            options: &speechkit::asr::AsrOptions,
+            events: speechkit::asr::AsrEvents,
+        ) -> Result<Box<dyn speechkit::asr::AsrStream>, SpeechError> {
+            self.0.open(options, events)
+        }
+        fn counters(&self) -> Vec<(&'static str, u64)> {
+            vec![("workers_started", 3), ("workers_crashed", 2)]
+        }
+    }
+    let app = app(AsrEngine::new(Counted(FakeAsr::hello_world())));
+    let (status, body) = send(&app, Request::get("/health").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let health = json(&body);
+    assert_eq!(health["counters"]["workers_started"], 3, "{health}");
+    assert_eq!(health["counters"]["workers_crashed"], 2, "{health}");
 }
 
 /// A router with no engine fails its health check.
@@ -318,6 +350,57 @@ async fn auth_requires_the_bearer_token() {
     );
 }
 
+/// The auth scheme is case-insensitive (RFC 9110, section 11.1), and may be
+/// followed by more than one space; the token is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_scheme_is_case_insensitive() {
+    let app = server(engine(FakeAsr::hello_world(), 8))
+        .with_auth(speechkit::Secret::new("let-me-in"))
+        .router();
+    let cases = [
+        ("bearer let-me-in", StatusCode::OK),
+        ("BEARER let-me-in", StatusCode::OK),
+        ("Bearer   let-me-in", StatusCode::OK),
+        ("Bearer LET-ME-IN", StatusCode::UNAUTHORIZED),
+        ("Bearerlet-me-in", StatusCode::UNAUTHORIZED),
+        ("Basic let-me-in", StatusCode::UNAUTHORIZED),
+    ];
+    for (header, expected) in cases {
+        let mut request = post(multipart(&wav(1), &[]));
+        request
+            .headers_mut()
+            .insert("authorization", header.parse().unwrap());
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, expected, "{header:?}: {body}");
+    }
+}
+
+/// An empty token would let in anyone who sends an empty one, so the
+/// router lets nobody in with it, and `start` refuses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_auth_token_is_refused() {
+    let app = server(engine(FakeAsr::hello_world(), 8))
+        .with_auth(speechkit::Secret::new(""))
+        .router();
+    for header in ["Bearer ", "Bearer"] {
+        let mut request = post(multipart(&wav(1), &[]));
+        request
+            .headers_mut()
+            .insert("authorization", header.parse().unwrap());
+        let (status, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{header:?}: {body}");
+    }
+    let started = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("127.0.0.1:0")
+        .with_auth(speechkit::Secret::new(""))
+        .start(std::future::pending())
+        .await;
+    let Err(SpeechError::InvalidInput(why)) = started else {
+        panic!("an empty token must be refused");
+    };
+    assert!(why.contains("token"), "{why}");
+}
+
 /// The `speechkit::cloud` client and this server speak the same protocol.
 #[test]
 fn interop_with_the_openai_http_client() {
@@ -350,6 +433,26 @@ fn interop_with_the_openai_http_client() {
     runtime.block_on(running.shutdown()).unwrap();
 }
 
+/// Dropping the handle stops the server: it stops accepting connections.
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_a_running_server_stops_it() {
+    let running = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("127.0.0.1:0")
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let addr = running.local_addr();
+    tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("it listens");
+    drop(running);
+    let begun = std::time::Instant::now();
+    while tokio::net::TcpStream::connect(addr).await.is_ok() {
+        assert!(begun.elapsed() < Duration::from_secs(10), "still listening");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn start_needs_an_engine() {
     let Err(error) = Server::new()
@@ -380,6 +483,42 @@ async fn saturated_engine_rejects_before_decoding() {
     let (status, _) = send(&app, post(multipart(b"not audio", &[]))).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     drop(session);
+}
+
+/// A streaming client that stops reading cannot hold its admission past
+/// the request's budget: the events stop at the deadline, and the next
+/// request is admitted while the response is still open.
+#[tokio::test(flavor = "multi_thread")]
+async fn unread_sse_response_expires_and_releases_admission() {
+    // More deltas than the event channel holds.
+    let mut script = Script::new();
+    for utterance in 0..100 {
+        script = script.then(
+            Trigger::AfterSamples(utterance * 100 + 1),
+            Step::Segment(utterance, "w"),
+        );
+    }
+    let app = server(engine(FakeAsr::new(script), 1))
+        .with_timeout(Duration::from_millis(500))
+        .router();
+    let unread = app
+        .clone()
+        .oneshot(post(multipart(&wav(1), &[("stream", "true")])))
+        .await
+        .unwrap();
+    assert_eq!(unread.status(), StatusCode::OK);
+    let mut admitted = false;
+    for _ in 0..50 {
+        let (status, _) = send(&app, post(multipart(b"bad", &[]))).await;
+        if status == StatusCode::BAD_REQUEST {
+            admitted = true;
+            break;
+        }
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(admitted, "the unread response kept its admission");
+    drop(unread);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -504,4 +643,44 @@ async fn http_sse_partials_arrive_before_done() {
     release.send(()).unwrap();
     assert!(session.finish(Duration::from_secs(3)).is_ok());
     server.abort();
+}
+
+/// A host name listens on every address it resolves to, on one port:
+/// `localhost` is often both `127.0.0.1` and `::1`, and a client may try
+/// either first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_name_listens_on_each_of_its_addresses() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut local = Vec::new();
+    for address in tokio::net::lookup_host("localhost:0").await.unwrap() {
+        // Only the addresses this machine can listen on at all.
+        if tokio::net::TcpListener::bind(address).await.is_ok() && !local.contains(&address) {
+            local.push(address);
+        }
+    }
+    assert!(!local.is_empty(), "localhost names no address to bind");
+    let running = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("localhost:0")
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let port = running.local_addr().port();
+    for mut address in local {
+        address.set_port(port);
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .unwrap_or_else(|error| panic!("{address}: {error}"));
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "{address}: {response}"
+        );
+    }
+    running.shutdown().await.unwrap();
 }

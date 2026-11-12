@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Barrier},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use speechkit::sherpa::process::{IsolatedAsr, WorkerCommand, serve};
@@ -33,6 +33,39 @@ use speechkit_testkit::{
 };
 
 const MARKER: &str = "SPEECHKIT_FAKE_WORKER_MARKER";
+
+/// A file whose existence makes a starting fake worker hang before its
+/// handshake, as a native model load that never returns would.
+const STALL: &str = "SPEECHKIT_FAKE_WORKER_STALL";
+
+/// A file whose existence makes a running fake worker stop reading its
+/// requests, as a frozen process would.
+const DEAF: &str = "SPEECHKIT_FAKE_WORKER_DEAF";
+
+/// Set to a number of seconds, makes the fake worker a wrapper, as a shell
+/// script that runs the worker without `exec` is: it starts the worker as
+/// its child, sharing its pipes, and waits for it. The child hangs before
+/// its handshake for that many seconds, then exits.
+const WRAP: &str = "SPEECHKIT_FAKE_WORKER_WRAP";
+/// Set in the wrapped child: how long it hangs.
+const LINGER: &str = "SPEECHKIT_FAKE_WORKER_LINGER";
+
+/// Stdin, until the file at `flag` exists: then every read blocks.
+struct Deaf<R> {
+    inner: R,
+    flag: Option<PathBuf>,
+}
+
+impl<R: std::io::Read> std::io::Read for Deaf<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.flag.as_ref().is_some_and(|flag| flag.exists()) {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+        self.inner.read(buf)
+    }
+}
 
 /// A backend whose streams follow their session's hints:
 ///
@@ -156,6 +189,26 @@ fn worker_entry() {
     let Some(marker) = std::env::var_os(MARKER) else {
         return;
     };
+    if let Some(seconds) = std::env::var_os(WRAP) {
+        // Its stderr goes nowhere, so it does not hold the test's open.
+        let _ = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(std::env::args_os().skip(1))
+            .env_remove(WRAP)
+            .env(LINGER, seconds)
+            .stderr(std::process::Stdio::null())
+            .status();
+        std::process::exit(0);
+    }
+    if let Some(seconds) = std::env::var_os(LINGER) {
+        let seconds: u64 = seconds.to_str().unwrap().parse().unwrap();
+        std::thread::sleep(Duration::from_secs(seconds));
+        std::process::exit(0);
+    }
+    if std::env::var_os(STALL).is_some_and(|stall| PathBuf::from(stall).exists()) {
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
     let mut caps = AsrCapabilities::new(SampleRate::HZ_16000);
     caps.reports_partials = true;
     caps.accepts_hints = true;
@@ -163,7 +216,11 @@ fn worker_entry() {
         caps,
         marker: PathBuf::from(marker),
     };
-    let _ = serve(&backend, std::io::stdin().lock(), std::io::stdout());
+    let input = Deaf {
+        inner: std::io::stdin().lock(),
+        flag: std::env::var_os(DEAF).map(PathBuf::from),
+    };
+    let _ = serve(&backend, input, std::io::stdout());
     // Leave before the test harness prints its summary on stdout.
     std::process::exit(0);
 }
@@ -177,15 +234,21 @@ fn engine() -> (AsrEngine, tempfile::TempDir) {
     (AsrEngine::new(backend), dir)
 }
 
-fn backend() -> (IsolatedAsr, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let command = WorkerCommand::new(std::env::current_exe().unwrap())
+/// The command that starts a fake worker keeping its files in `dir`.
+fn command(dir: &tempfile::TempDir) -> WorkerCommand {
+    WorkerCommand::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("worker_entry")
         .arg("--nocapture")
         .arg("--test-threads=1")
-        .env(MARKER, dir.path().join("marker"));
-    let backend = IsolatedAsr::spawn_command(command).unwrap();
+        .env(MARKER, dir.path().join("marker"))
+        .env(STALL, dir.path().join("stall"))
+        .env(DEAF, dir.path().join("deaf"))
+}
+
+fn backend() -> (IsolatedAsr, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = IsolatedAsr::spawn_command(command(&dir)).unwrap();
     assert!(backend.capabilities().reports_partials);
     assert_eq!(backend.name(), "scripted@worker");
     (backend, dir)
@@ -257,6 +320,38 @@ fn idle_workers_are_reused_and_busy_ones_are_not() {
     assert_ne!(a.text(), b.text(), "concurrent sessions on two workers");
 }
 
+/// A request to a worker that stopped reading fails within the call
+/// timeout, even when it is larger than the pipe can hold, and the worker
+/// is killed: the write does not block the session forever.
+#[test]
+fn a_request_to_a_worker_that_stopped_reading_times_out() {
+    let (backend, dir) = backend();
+    let engine = AsrEngine::new(backend.with_call_timeout(Duration::from_millis(500)));
+    // Start the worker, and leave it idle in the pool.
+    assert!(run(&engine, &[]).unwrap().starts_with("pid"));
+    std::fs::write(dir.path().join("deaf"), "").unwrap();
+    // Far more than a pipe holds: the worker's read stops partway.
+    let phrase = "x".repeat(4_000);
+    let (done, finished) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    std::thread::spawn(move || {
+        let many = vec![phrase.as_str(); 100];
+        let _ = done.send(run(&engine, &many).map(|_| engine));
+    });
+    let outcome = finished
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the session blocked on the request");
+    let Err(error) = outcome else {
+        panic!("the session succeeded on a worker that stopped reading");
+    };
+    assert_retryable(&error);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn events_and_failures_arrive_while_the_session_is_idle() {
     let (engine, _dir) = engine();
@@ -307,6 +402,112 @@ fn a_worker_that_exited_while_idle_is_not_used() {
     std::thread::sleep(Duration::from_millis(500));
     let second = run(&engine, &[]).unwrap();
     assert_ne!(first, second, "a new worker");
+}
+
+/// A worker that never finishes starting, as a model load that hangs in
+/// native code would, is killed at its start timeout: the caller gets a
+/// retryable error instead of waiting forever.
+#[test]
+fn a_worker_that_hangs_while_starting_is_killed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("stall"), "").unwrap();
+    let begun = Instant::now();
+    let error =
+        IsolatedAsr::spawn_command(command(&dir).with_start_timeout(Duration::from_millis(500)))
+            .expect_err("the worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
+    let detail = std::error::Error::source(&error).unwrap().to_string();
+    assert!(detail.contains("did not start within"), "{detail}");
+}
+
+/// A worker command that wraps the worker, as a shell script without
+/// `exec` does, leaves the worker running when it is killed, holding the
+/// pipes. A start that times out still returns at its timeout, rather than
+/// when that orphan lets go of them.
+#[test]
+fn a_wrapped_worker_that_hangs_while_starting_is_given_up_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let begun = Instant::now();
+    let error = IsolatedAsr::spawn_command(
+        command(&dir)
+            .env(WRAP, "15")
+            .with_start_timeout(Duration::from_millis(500)),
+    )
+    .expect_err("the worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "the start waited {:?} for the wrapped worker's pipes",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
+}
+
+/// A session that needs a new worker which hangs while starting fails,
+/// and frees its slot, at the start timeout.
+#[test]
+fn a_session_on_a_worker_that_hangs_while_starting_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend =
+        IsolatedAsr::spawn_command(command(&dir).with_start_timeout(Duration::from_millis(500)))
+            .unwrap();
+    let engine = AsrEngine::new(backend);
+    // The first session takes the idle worker; the second needs a new one.
+    let first = engine.start(RATE, hints(&[]), secs(60)).unwrap();
+    std::fs::write(dir.path().join("stall"), "").unwrap();
+    // Without a start timeout this would wait out the whole deadline, then
+    // fail with DeadlineExceeded, and leave the session's thread blocked.
+    let begun = Instant::now();
+    let error = engine
+        .start(RATE, hints(&[]), secs(20))
+        .expect_err("the second worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
+    let counted = counters(&engine);
+    assert_eq!(counted["worker_start_failures"], 1, "{counted:?}");
+    assert_eq!(counted["workers_killed"], 1, "{counted:?}");
+    drop(first);
+    assert!(eventually(Duration::from_secs(10), || engine
+        .active_sessions()
+        == 0));
+}
+
+/// The engine's counters, by name.
+fn counters(engine: &AsrEngine) -> std::collections::HashMap<&'static str, u64> {
+    engine.counters().into_iter().collect()
+}
+
+/// The counters count worker starts, crashes (including a worker that
+/// exited while idle), and kills, so a crash loop or a hanging model shows
+/// on the server's `/health`.
+#[test]
+fn counters_count_starts_crashes_and_kills() {
+    let (backend, _dir) = backend();
+    let engine = AsrEngine::new(backend.with_call_timeout(Duration::from_millis(500)));
+    let idle = || eventually(Duration::from_secs(10), || engine.active_sessions() == 0);
+    assert_eq!(counters(&engine)["workers_started"], 1);
+    assert_retryable(&run(&engine, &["abort"]).expect_err("the worker crashed"));
+    assert!(idle());
+    assert_retryable(&run(&engine, &["hang"]).expect_err("the worker hung"));
+    assert!(idle());
+    run(&engine, &["exit"]).unwrap();
+    assert!(idle());
+    std::thread::sleep(Duration::from_millis(500));
+    run(&engine, &[]).unwrap();
+    let counted = counters(&engine);
+    // The first, and one after each worker that went away.
+    assert_eq!(counted["workers_started"], 4, "{counted:?}");
+    assert_eq!(counted["workers_crashed"], 2, "{counted:?}");
+    assert_eq!(counted["workers_killed"], 1, "{counted:?}");
+    assert_eq!(counted["worker_start_failures"], 0, "{counted:?}");
 }
 
 #[test]

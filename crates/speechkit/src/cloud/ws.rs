@@ -395,7 +395,8 @@ impl<H: Handler> Reader<H> {
 /// since sending a segment may run a post-processor's model. The stream
 /// sends from its own thread. Dropping it stops the task, waits for a
 /// message in the handler, and closes the socket before returning, since
-/// the session's slot is held until then.
+/// the session's slot is held until then. The close waits at most
+/// [`CLOSE_WAIT`], so a peer that stopped reading cannot hold the slot.
 pub(crate) struct Pushed<H> {
     runtime: CloudRuntime,
     backend: &'static str,
@@ -559,10 +560,15 @@ impl<H> Drop for Pushed<H> {
         // for it, and keep any later one from reaching the handler.
         self.reader.lock().dropped = true;
         if let Some(mut sink) = self.sink.take() {
-            let _ = self.runtime.block_on(async {
-                let _ = tokio::time::timeout(CLOSE_WAIT, sink.send(close_frame())).await;
+            // Closing flushes what is buffered, which never ends on a peer
+            // that stopped reading, so the whole close is bounded.
+            let closing = async {
+                let _ = sink.send(close_frame()).await;
                 sink.close().await
-            });
+            };
+            let _ = self
+                .runtime
+                .block_on(async { tokio::time::timeout(CLOSE_WAIT, closing).await });
         }
     }
 }
@@ -650,6 +656,69 @@ mod tests {
         assert_eq!(
             std::error::Error::source(&code_only).unwrap().to_string(),
             "failed (x)"
+        );
+    }
+
+    struct Ignore;
+
+    impl Handler for Ignore {
+        fn on_message(&mut self, _: Incoming) -> Result<(), SpeechError> {
+            Ok(())
+        }
+
+        fn may_close(&self) -> bool {
+            true
+        }
+
+        fn failed(&mut self, _: &SpeechError) {}
+    }
+
+    /// Dropping a connection whose peer stopped reading returns after
+    /// about `CLOSE_WAIT`, instead of waiting for the peer forever: the
+    /// session's slot is held until it returns.
+    #[test]
+    fn dropping_a_stalled_connection_is_bounded() {
+        let runtime = CloudRuntime::owned(2).unwrap();
+        let (address_tx, address_rx) = std::sync::mpsc::channel();
+        // Accepts one connection, then holds it without reading.
+        runtime.handle().spawn(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            address_tx.send(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let address = address_rx.recv().unwrap();
+        let ws = Ws::connect(
+            runtime.clone(),
+            "test",
+            &format!("ws://{address}/"),
+            &Secret::new("key"),
+            &[],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let mut pushed = ws.push(Ignore).unwrap();
+        // Send until the socket's buffers are full and a send times out.
+        let chunk = vec![0_u8; 256 * 1024];
+        let full = (0..4_000).any(|_| {
+            pushed
+                .send(
+                    Message::Binary(chunk.clone().into()),
+                    Duration::from_millis(200),
+                )
+                .is_err()
+        });
+        assert!(full, "the socket never filled");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(pushed);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(CLOSE_WAIT * 5).is_ok(),
+            "dropping waited on a peer that stopped reading"
         );
     }
 

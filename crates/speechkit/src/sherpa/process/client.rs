@@ -2,14 +2,14 @@
 
 use std::{
     ffi::OsString,
-    io::{BufReader, BufWriter},
+    io::{BufReader, BufWriter, Write},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -28,6 +28,9 @@ const NAME: &str = "speechkit-worker";
 /// How long one request may take by default before the worker is taken
 /// as hung and killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a worker may take by default to load its model and send its
+/// handshake before it is taken as hung and killed.
+const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a worker may still take to answer once its session has
 /// stopped, such as after a cancel.
 const STOPPED_GRACE: Duration = Duration::from_secs(2);
@@ -39,11 +42,17 @@ fn crashed(detail: impl std::fmt::Display) -> SpeechError {
 }
 
 /// How to start a worker process.
+///
+/// A worker that hangs or breaks is killed, which kills that process only.
+/// A wrapper, such as a shell script, should `exec` the worker rather than
+/// run it as a child: killing the wrapper would leave the worker running.
+/// The caller does not wait for it either way.
 #[derive(Debug, Clone)]
 pub struct WorkerCommand {
     program: PathBuf,
     args: Vec<OsString>,
     envs: Vec<(OsString, OsString)>,
+    start_timeout: Duration,
 }
 
 impl WorkerCommand {
@@ -53,7 +62,19 @@ impl WorkerCommand {
             program: program.into(),
             args: Vec::new(),
             envs: Vec::new(),
+            start_timeout: START_TIMEOUT,
         }
+    }
+
+    /// Sets how long a worker may take to start: to load its model and
+    /// send its handshake. A worker that takes longer is taken as hung and
+    /// killed, and the start fails with a retryable
+    /// [`SpeechError::Backend`]. It applies to every worker the pool
+    /// starts, the first one included. Default: 120 s.
+    #[must_use]
+    pub fn with_start_timeout(mut self, timeout: Duration) -> Self {
+        self.start_timeout = timeout;
+        self
     }
 
     /// Adds an argument.
@@ -75,7 +96,27 @@ impl WorkerCommand {
 enum Reply {
     Done,
     Error(WireError),
+    /// The worker exited, or its pipes broke.
     Gone(String),
+    /// The worker is running but did not take or answer the request in
+    /// time.
+    Hung(String),
+}
+
+/// What a pool counts about its workers, for
+/// [`counters`](AsrBackend::counters).
+#[derive(Debug, Default)]
+struct Counts {
+    started: AtomicU64,
+    start_failures: AtomicU64,
+    /// Workers that exited on their own, in use or idle.
+    crashed: AtomicU64,
+    /// Workers killed for not starting or answering in time.
+    killed: AtomicU64,
+}
+
+fn bump(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Where the reader thread sends the events of the stream in progress.
@@ -84,16 +125,38 @@ type Link = Arc<Mutex<Option<AsrEvents>>>;
 /// A running worker, serving one stream at a time.
 struct Worker {
     process: Child,
-    input: BufWriter<ChildStdin>,
+    /// Encoded requests for the writer thread. A blocking write to a worker
+    /// that stopped reading would hold the caller past any timeout, so the
+    /// caller waits for [`written`](Self::written) instead.
+    requests: Option<mpsc::Sender<Vec<u8>>>,
+    /// The outcome of each write the writer thread made.
+    written: mpsc::Receiver<std::io::Result<()>>,
     replies: mpsc::Receiver<Reply>,
     link: Link,
-    reader: Option<JoinHandle<()>>,
     /// The worker is gone, or a call to it failed.
     broken: bool,
+    counts: Arc<Counts>,
 }
 
 impl Worker {
-    fn start(command: &WorkerCommand) -> Result<(Self, String, AsrCapabilities), SpeechError> {
+    /// Starts a worker, counting whether it started.
+    fn start(
+        command: &WorkerCommand,
+        counts: &Arc<Counts>,
+    ) -> Result<(Self, String, AsrCapabilities), SpeechError> {
+        let started = Self::launch(command, counts);
+        bump(if started.is_ok() {
+            &counts.started
+        } else {
+            &counts.start_failures
+        });
+        started
+    }
+
+    fn launch(
+        command: &WorkerCommand,
+        counts: &Arc<Counts>,
+    ) -> Result<(Self, String, AsrCapabilities), SpeechError> {
         let program = &command.program;
         let mut process = Command::new(program)
             .args(&command.args)
@@ -108,9 +171,49 @@ impl Worker {
             let _ = process.wait();
             return Err(crashed("no pipes to the worker"));
         };
-        let mut output = BufReader::new(output);
-        let hello =
-            skip_to_handshake(&mut output).and_then(|()| read_frame::<Response>(&mut output));
+        // The reader thread reads the handshake too, so waiting for it can
+        // time out: the worker loads its model before it answers, and a
+        // load that hangs must not block the caller forever.
+        let link: Link = Arc::default();
+        let (send, replies) = mpsc::channel();
+        let (send_hello, hello) = mpsc::channel();
+        // Neither pipe thread is waited for: a worker killed while a child
+        // of its own holds its pipes, such as a wrapper script that does not
+        // `exec` the worker, would hold the caller until that child exits.
+        // The threads end once the pipes close.
+        std::thread::Builder::new()
+            .name("speechkit-worker-reader".into())
+            .spawn({
+                let link = link.clone();
+                move || {
+                    let mut output = BufReader::new(output);
+                    let first = skip_to_handshake(&mut output)
+                        .and_then(|()| read_frame::<Response>(&mut output));
+                    let started = matches!(first, Ok(Some(Response::Hello { .. })));
+                    if send_hello.send(first).is_ok() && started {
+                        read(output, &link, &send);
+                    }
+                }
+            })
+            .map_err(|error| {
+                kill(&mut process);
+                crashed(error)
+            })?;
+        let timeout = command.start_timeout;
+        let hello = match hello.recv_timeout(timeout) {
+            Ok(hello) => hello,
+            Err(RecvTimeoutError::Timeout) => {
+                bump(&counts.killed);
+                let status = kill(&mut process);
+                return Err(crashed(format!(
+                    "it did not start within {timeout:?} ({status})"
+                )));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = kill(&mut process);
+                return Err(crashed(format!("no hello from the worker ({status})")));
+            }
+        };
         let (name, caps) = match hello {
             Ok(Some(Response::Hello { name, caps })) => match caps.try_into() {
                 Ok(caps) => (name, caps),
@@ -132,46 +235,74 @@ impl Worker {
                 return Err(crashed(format!("{error} ({status})")));
             }
         };
-        let link: Link = Arc::default();
-        let (send, replies) = mpsc::channel();
-        let reader = std::thread::Builder::new()
-            .name("speechkit-worker-reader".into())
-            .spawn({
-                let link = link.clone();
-                move || read(output, &link, &send)
-            })
-            .map_err(|error| {
+        let (requests, written) = match spawn_writer(input) {
+            Ok(writer) => writer,
+            Err(error) => {
                 kill(&mut process);
-                crashed(error)
-            })?;
+                return Err(crashed(error));
+            }
+        };
         let worker = Self {
             process,
-            input: BufWriter::new(input),
+            requests: Some(requests),
+            written,
             replies,
             link,
-            reader: Some(reader),
             broken: false,
+            counts: counts.clone(),
         };
         Ok((worker, name, caps))
     }
 
     /// Sends `request` and waits for its answer. Every event it produced
-    /// has been forwarded by then. A worker that does not answer within
-    /// `timeout` is killed, so a hang fails its session like a crash.
+    /// has been forwarded by then. A worker that does not take the request
+    /// and answer within `timeout` is killed, so a hang fails its session
+    /// like a crash.
     fn call(&mut self, request: &Request, timeout: Duration) -> Result<(), SpeechError> {
         if self.broken {
             return Err(crashed("it stopped earlier"));
         }
-        let reply = match write_frame(&mut self.input, request) {
-            Ok(()) => self.reply(timeout),
-            Err(error) => Reply::Gone(error.to_string()),
+        let started = Instant::now();
+        let reply = match self.send(request, timeout) {
+            Ok(()) => self.reply(timeout.saturating_sub(started.elapsed())),
+            Err(gone) => gone,
         };
         match reply {
             Reply::Done => Ok(()),
             Reply::Error(error) => Err(error.into()),
             Reply::Gone(detail) => {
+                bump(&self.counts.crashed);
                 self.broken = true;
                 Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
+            }
+            Reply::Hung(detail) => {
+                bump(&self.counts.killed);
+                self.broken = true;
+                Err(crashed(format!("{detail} ({})", kill(&mut self.process))))
+            }
+        }
+    }
+
+    /// Hands `request` to the writer thread and waits up to `timeout` for
+    /// the worker to take it.
+    fn send(&self, request: &Request, timeout: Duration) -> Result<(), Reply> {
+        let mut frame = Vec::new();
+        write_frame(&mut frame, request).map_err(|error| Reply::Gone(error.to_string()))?;
+        let sent = self
+            .requests
+            .as_ref()
+            .is_some_and(|requests| requests.send(frame).is_ok());
+        if !sent {
+            return Err(Reply::Gone("it stopped taking requests".into()));
+        }
+        match self.written.recv_timeout(timeout) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Reply::Gone(error.to_string())),
+            Err(RecvTimeoutError::Timeout) => Err(Reply::Hung(format!(
+                "it did not take the request within {timeout:?}"
+            ))),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(Reply::Gone("it stopped taking requests".into()))
             }
         }
     }
@@ -193,13 +324,13 @@ impl Worker {
             }
             let now = Instant::now();
             if now.duration_since(started) >= timeout {
-                return Reply::Gone(format!("it did not answer within {timeout:?}"));
+                return Reply::Hung(format!("it did not answer within {timeout:?}"));
             }
             let stopping = lock(&self.link)
                 .as_ref()
                 .is_some_and(AsrEvents::is_stopping);
             if stopping && now.duration_since(*stopped.get_or_insert(now)) >= STOPPED_GRACE {
-                return Reply::Gone("it did not answer after its session stopped".into());
+                return Reply::Hung("it did not answer after its session stopped".into());
             }
         }
     }
@@ -218,11 +349,36 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.attach(None);
+        // Killing the worker ends a write it was not taking, and its output,
+        // and so its pipe threads, unless a child of its own holds the
+        // pipes; they are not waited for (see `launch`).
         kill(&mut self.process);
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
+        drop(self.requests.take());
     }
+}
+
+/// The writer thread's ends: where encoded requests go, and how each
+/// write went.
+type WriterEnds = (mpsc::Sender<Vec<u8>>, mpsc::Receiver<std::io::Result<()>>);
+
+/// The writer thread, which writes each frame it is sent to `input` and
+/// reports how the write went, until a write fails or the sender is gone.
+fn spawn_writer(input: ChildStdin) -> std::io::Result<WriterEnds> {
+    let (requests, frames) = mpsc::channel::<Vec<u8>>();
+    let (wrote, written) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("speechkit-worker-writer".into())
+        .spawn(move || {
+            let mut input = BufWriter::new(input);
+            for frame in frames {
+                let result = input.write_all(&frame).and_then(|()| input.flush());
+                let failed = result.is_err();
+                if wrote.send(result).is_err() || failed {
+                    return;
+                }
+            }
+        })?;
+    Ok((requests, written))
 }
 
 /// Stops `process` and describes how it ended.
@@ -273,6 +429,7 @@ fn read(mut output: BufReader<ChildStdout>, link: &Link, replies: &mpsc::Sender<
 struct Pool {
     command: WorkerCommand,
     idle: Mutex<Vec<Worker>>,
+    counts: Arc<Counts>,
 }
 
 impl Pool {
@@ -287,9 +444,10 @@ impl Pool {
             if worker.is_alive() {
                 return Ok(worker);
             }
+            bump(&self.counts.crashed);
             tracing::debug!(backend = %name, "dropped an idle worker process that had exited");
         }
-        let (worker, _, _) = Worker::start(&self.command)?;
+        let (worker, _, _) = Worker::start(&self.command, &self.counts)?;
         tracing::debug!(backend = %name, "started a worker process");
         Ok(worker)
     }
@@ -306,8 +464,10 @@ impl Pool {
 /// A recognizer in worker processes, so a native crash fails one session
 /// rather than the application.
 ///
-/// Each session takes an idle worker, or starts one, which loads the model
-/// within `start`'s deadline. A worker serves one session at a time, and
+/// Each session takes an idle worker, or starts one, which must load the
+/// model within its command's
+/// [start timeout](WorkerCommand::with_start_timeout) or is killed, failing
+/// the session. A worker serves one session at a time, and
 /// goes back to the pool when the session's stream is dropped, so
 /// sessions run in parallel, at the cost of one model load per concurrent
 /// session. If a worker dies, or hangs past its
@@ -350,14 +510,18 @@ impl IsolatedAsr {
     ///
     /// # Errors
     ///
-    /// A retryable backend error if the process cannot start or dies
-    /// before its handshake, or the error the worker reports.
+    /// A retryable backend error if the process cannot start, dies before
+    /// its handshake, or does not send it within the command's
+    /// [start timeout](WorkerCommand::with_start_timeout); or the error the
+    /// worker reports.
     pub fn spawn_command(command: WorkerCommand) -> Result<Self, SpeechError> {
-        let (worker, name, caps) = Worker::start(&command)?;
+        let counts = Arc::default();
+        let (worker, name, caps) = Worker::start(&command, &counts)?;
         Ok(Self {
             pool: Arc::new(Pool {
                 command,
                 idle: Mutex::new(vec![worker]),
+                counts,
             }),
             name: format!("{name}@worker"),
             caps,
@@ -365,8 +529,8 @@ impl IsolatedAsr {
         })
     }
 
-    /// Sets how long the worker may take to answer one request: to open a
-    /// stream, take a chunk of audio, or finish. A worker that takes
+    /// Sets how long the worker may take to take and answer one request:
+    /// to open a stream, take a chunk of audio, or finish. A worker that takes
     /// longer is taken as hung and killed, and its session fails with a
     /// retryable [`SpeechError::Backend`]. A worker whose session was
     /// cancelled gets 2 s. Default: 60 s.
@@ -384,6 +548,20 @@ impl AsrBackend for IsolatedAsr {
 
     fn capabilities(&self) -> &AsrCapabilities {
         &self.caps
+    }
+
+    /// `workers_started`, `worker_start_failures`, `workers_crashed`
+    /// (exited on their own, in use or idle), and `workers_killed` (did not
+    /// start or answer in time), counting the first worker too.
+    fn counters(&self) -> Vec<(&'static str, u64)> {
+        let counts = &self.pool.counts;
+        let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        vec![
+            ("workers_started", read(&counts.started)),
+            ("worker_start_failures", read(&counts.start_failures)),
+            ("workers_crashed", read(&counts.crashed)),
+            ("workers_killed", read(&counts.killed)),
+        ]
     }
 
     fn open(

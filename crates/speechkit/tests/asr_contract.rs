@@ -53,6 +53,7 @@ faults!(
     a02_backpressure_full,
     a02_push_wait_wakes_on_close,
     a03_late_events_discarded,
+    a03_late_events_after_a_failure_discarded,
     a04_failure_keeps_confirmed,
     a05_readers,
     a05_slow_reader,

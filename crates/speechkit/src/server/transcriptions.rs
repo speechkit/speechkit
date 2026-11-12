@@ -37,10 +37,13 @@ use crate::server::{
 const PUSH: Duration = Duration::from_millis(100);
 
 /// Cancels the session when dropped: a client that disconnects drops the
-/// handler future or the response stream, and with it this guard.
+/// handler future or the response stream, and with it this guard. It
+/// holds the request's admission while the handler waits for the result;
+/// a streamed response's admission goes with its event thread instead,
+/// since a response nobody reads is never polled, and so never dropped.
 struct CancelOnDrop {
     session: Arc<AsrSession>,
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Drop for CancelOnDrop {
@@ -59,7 +62,9 @@ struct Request {
 async fn read(mut multipart: Multipart) -> Result<Request, Box<Response>> {
     let failed = |error: MultipartError| {
         let status = error.status();
-        Box::new(if status == StatusCode::PAYLOAD_TOO_LARGE {
+        Box::new(if super::deadline::timed_out(&error) {
+            respond(StatusCode::REQUEST_TIMEOUT, super::deadline::TIMED_OUT)
+        } else if status == StatusCode::PAYLOAD_TOO_LARGE {
             respond(status, "the request body exceeds the server's size limit")
         } else {
             respond(status, format!("invalid multipart request: {error}"))
@@ -263,7 +268,7 @@ pub(crate) async fn handle(
     }
     let guard = CancelOnDrop {
         session: session.clone(),
-        _permit: permit,
+        _permit: Some(permit),
     };
     let result =
         tokio::task::spawn_blocking(move || feed(&session, &audio, max_chunk, deadline)).await;
@@ -286,12 +291,24 @@ fn event(kind: &str, mut payload: serde_json::Value) -> Event {
 }
 
 /// Reads the updates on a blocking thread and forwards SSE events. A
-/// closed channel means the client left: the session is cancelled.
+/// closed channel means the client left, and a send still waiting at
+/// `deadline` means it stopped reading: either way the session is
+/// cancelled, and returning releases the request's admission.
 fn forward(
     mut updates: AsrUpdates,
     session: &AsrSession,
     events: &tokio::sync::mpsc::Sender<Event>,
+    deadline: Instant,
 ) {
+    let runtime = tokio::runtime::Handle::current();
+    let send = |event| {
+        runtime.block_on(async {
+            matches!(
+                tokio::time::timeout_at(deadline.into(), events.send(event)).await,
+                Ok(Ok(()))
+            )
+        })
+    };
     let mut view = LiveTranscript::new();
     let mut deltas = TextDeltaBuilder::new();
     loop {
@@ -318,9 +335,10 @@ fn forward(
                 .map(|delta| event("transcript.text.delta", json!({ "delta": delta }))),
         };
         if let Some(next) = next
-            && events.blocking_send(next).is_err()
+            && !send(next)
         {
             session.cancel();
+            return;
         }
         if matches!(update, AsrUpdate::Closed(_)) {
             return;
@@ -340,10 +358,13 @@ fn stream(
     let feeder = session.clone();
     tokio::task::spawn_blocking(move || drop(feed(&feeder, &audio, max_chunk, deadline)));
     let reader = session.clone();
-    tokio::task::spawn_blocking(move || forward(updates, &reader, &sender));
+    tokio::task::spawn_blocking(move || {
+        forward(updates, &reader, &sender, deadline);
+        drop(permit);
+    });
     let guard = CancelOnDrop {
         session,
-        _permit: permit,
+        _permit: None,
     };
     let events = futures::stream::unfold((receiver, guard), |(mut receiver, guard)| async move {
         let event = receiver.recv().await?;

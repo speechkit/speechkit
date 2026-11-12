@@ -55,25 +55,29 @@ fn model_name(explicit: Option<&String>, model: Option<&Path>, backend: &str) ->
     })
 }
 
-/// Whether every address `bind` names, such as `localhost:8080`, is a
-/// loopback address. A name that does not resolve is not.
-fn is_loopback(bind: &str) -> bool {
-    bind.to_socket_addrs().is_ok_and(|addresses| {
-        let mut any = false;
-        let all = addresses.into_iter().all(|address| {
-            any = true;
-            address.ip().is_loopback()
-        });
-        any && all
-    })
+/// The addresses `bind` names, such as `localhost:8080`, so a bad one is
+/// reported before the backend is built.
+fn resolve(bind: &str) -> Result<Vec<SocketAddr>, CliError> {
+    let invalid =
+        |why: &dyn std::fmt::Display| CliError::usage(format!("invalid --bind {bind:?}: {why}"));
+    let addresses: Vec<_> = bind.to_socket_addrs().map_err(|e| invalid(&e))?.collect();
+    if addresses.is_empty() {
+        return Err(invalid(&"it names no address"));
+    }
+    Ok(addresses)
+}
+
+/// Whether every one of `addresses` is a loopback address.
+fn is_loopback(addresses: &[SocketAddr]) -> bool {
+    addresses.iter().all(|address| address.ip().is_loopback())
 }
 
 /// Builds the engine and starts serving it, without blocking.
 ///
 /// # Errors
 ///
-/// A usage error for a missing token variable, or any error building the
-/// backend or binding the address.
+/// A usage error for a missing token variable or a bind address that does
+/// not resolve, or any error building the backend or binding the address.
 pub fn serve(
     args: &ServeArgs,
     backends: &dyn BackendFactory,
@@ -83,7 +87,8 @@ pub fn serve(
         Some(var) => Some(Secret::from_env(var).map_err(|e| CliError::usage(e.to_string()))?),
         None => None,
     };
-    if auth.is_none() && !is_loopback(&args.bind) {
+    let addresses = resolve(&args.bind)?;
+    if auth.is_none() && !is_loopback(&addresses) {
         let _ = writeln!(
             stderr,
             "warning: serving on {} without authentication; anyone who can reach it can use it \
@@ -133,7 +138,16 @@ pub(crate) fn serve_until_signal(
     backends: &dyn BackendFactory,
     stderr: &mut dyn Write,
 ) -> Result<(), CliError> {
-    serve(args, backends, stderr)?.wait_for_signal()
+    let handle = serve(args, backends, stderr)?;
+    if args.check {
+        handle.shutdown()?;
+        let _ = writeln!(
+            stderr,
+            "check passed: the backends loaded and the address bound"
+        );
+        return Ok(());
+    }
+    handle.wait_for_signal()
 }
 
 #[cfg(test)]
@@ -142,10 +156,11 @@ mod tests {
 
     #[test]
     fn loopback_detection() {
-        assert!(is_loopback("127.0.0.1:8080"));
-        assert!(is_loopback("[::1]:80"));
-        assert!(is_loopback("localhost:8080"));
-        assert!(!is_loopback("0.0.0.0:8080"));
-        assert!(!is_loopback("not an address"));
+        let loopback = |bind| is_loopback(&resolve(bind).unwrap());
+        assert!(loopback("127.0.0.1:8080"));
+        assert!(loopback("[::1]:80"));
+        assert!(loopback("localhost:8080"));
+        assert!(!loopback("0.0.0.0:8080"));
+        assert!(resolve("not an address").is_err());
     }
 }

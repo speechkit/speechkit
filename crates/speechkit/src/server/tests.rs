@@ -11,6 +11,7 @@ use super::{RunningServer, Server};
 use crate::{
     SampleRate, SpeechError,
     asr::{AsrBackend, AsrCapabilities, AsrEngine, AsrEvents, AsrOptions, AsrStream},
+    tts::{TtsBackend, TtsCapabilities, TtsEngine, TtsOptions, TtsStream, Voice},
 };
 
 /// A recognizer that hears nothing.
@@ -105,10 +106,52 @@ fn slow_bodies_are_cut_off() {
         .unwrap();
     let (response, waited) = read_to_close(stream);
     assert!(waited < Duration::from_secs(5), "{waited:?}");
-    assert!(
-        response.is_empty() || !response.starts_with("HTTP/1.1 200"),
-        "{response}"
-    );
+    // The client's fault, and worth retrying: not a 400 or a server error.
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    runtime.block_on(server.shutdown()).unwrap();
+}
+
+/// A synthesizer that is never reached: the body fails first.
+struct Unreached(TtsCapabilities);
+
+impl TtsBackend for Unreached {
+    fn name(&self) -> &'static str {
+        "unreached"
+    }
+
+    fn capabilities(&self) -> &TtsCapabilities {
+        &self.0
+    }
+
+    fn voices(&self) -> &[Voice] {
+        &[]
+    }
+
+    fn open(&self, _: &TtsOptions) -> Result<Box<dyn TtsStream>, SpeechError> {
+        Err(SpeechError::Unsupported("not reached".into()))
+    }
+}
+
+/// A speech request whose JSON body stalls is answered 408 too.
+#[test]
+fn a_slow_speech_body_is_a_request_timeout() {
+    let (runtime, server) = start(|server| {
+        server.body_timeout = Duration::from_millis(300);
+        server.tts = Some((
+            TtsEngine::new(Unreached(TtsCapabilities::new(SampleRate::HZ_16000, 100))),
+            "unreached".into(),
+        ));
+    });
+    let mut stream = connect(server.local_addr());
+    stream
+        .write_all(
+            b"POST /v1/audio/speech HTTP/1.1\r\nHost: localhost\r\n\
+              Content-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"input\": \"",
+        )
+        .unwrap();
+    let (response, waited) = read_to_close(stream);
+    assert!(waited < Duration::from_secs(5), "{waited:?}");
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
     runtime.block_on(server.shutdown()).unwrap();
 }
 
@@ -121,5 +164,70 @@ fn a_prompt_client_is_served() {
         .unwrap();
     let (response, _) = read_to_close(stream);
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    runtime.block_on(server.shutdown()).unwrap();
+}
+
+/// Writes `bytes` one at a time, `gap` apart, until they are all sent or
+/// the server closes the connection. Returns how long the server let it
+/// go on.
+fn trickle(stream: &mut TcpStream, bytes: &[u8], gap: Duration) -> Duration {
+    let started = Instant::now();
+    for byte in bytes {
+        if stream.write_all(std::slice::from_ref(byte)).is_err() {
+            break;
+        }
+        std::thread::sleep(gap);
+        // A closed connection shows up as a read of 0 bytes (or a reset)
+        // before a write fails.
+        stream.set_nonblocking(true).unwrap();
+        let mut probe = [0; 1];
+        let closed = matches!(stream.read(&mut probe), Ok(0) | Err(_) if !would_block(stream));
+        stream.set_nonblocking(false).unwrap();
+        if closed {
+            break;
+        }
+    }
+    started.elapsed()
+}
+
+fn would_block(stream: &TcpStream) -> bool {
+    let mut probe = [0; 1];
+    matches!(stream.peek(&mut probe), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+/// The header timeout is a total, not an idle timeout: a client that
+/// sends one byte every 50 ms never goes idle, and is still cut off.
+#[test]
+fn trickled_headers_are_cut_off() {
+    let (runtime, server) = start(|server| server.header_timeout = Duration::from_millis(300));
+    let mut stream = connect(server.local_addr());
+    let headers = format!(
+        "GET /health HTTP/1.1\r\nHost: localhost\r\n{}",
+        "x-a: b\r\n".repeat(200)
+    );
+    let waited = trickle(&mut stream, headers.as_bytes(), Duration::from_millis(50));
+    assert!(
+        waited < Duration::from_secs(5),
+        "headers trickled for {waited:?}"
+    );
+    runtime.block_on(server.shutdown()).unwrap();
+}
+
+/// The body timeout is a total too.
+#[test]
+fn trickled_bodies_are_cut_off() {
+    let (runtime, server) = start(|server| server.body_timeout = Duration::from_millis(300));
+    let mut stream = connect(server.local_addr());
+    stream
+        .write_all(
+            b"POST /v1/audio/transcriptions HTTP/1.1\r\nHost: localhost\r\n\
+              Content-Type: multipart/form-data; boundary=b\r\nContent-Length: 100000\r\n\r\n",
+        )
+        .unwrap();
+    let waited = trickle(&mut stream, &[b'-'; 2000], Duration::from_millis(50));
+    assert!(
+        waited < Duration::from_secs(5),
+        "the body trickled for {waited:?}"
+    );
     runtime.block_on(server.shutdown()).unwrap();
 }

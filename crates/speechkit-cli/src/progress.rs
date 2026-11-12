@@ -50,7 +50,7 @@ impl Display<'_> {
 }
 
 /// Shows updates until the session closes or `deadline` passes (then the
-/// session is cancelled).
+/// session fails with `DeadlineExceeded`).
 pub(crate) fn show_until_done(
     mut updates: AsrUpdates,
     stderr: &mut dyn Write,
@@ -67,7 +67,9 @@ pub(crate) fn show_until_done(
         let update = match updates.recv(deadline) {
             Ok(update) => update,
             Err(RecvError::Timeout | RecvError::Empty) => {
-                session.cancel();
+                // The deadline has passed, so this returns at once, and the
+                // session fails as timed out rather than as cancelled.
+                let _ = session.finish(deadline);
                 continue;
             }
             Err(RecvError::Closed) => break,

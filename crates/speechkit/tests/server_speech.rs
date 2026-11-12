@@ -92,6 +92,11 @@ async fn pcm_and_wav_success() {
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(&wav[4..8], &[0xFF; 4], "placeholder size");
     assert!(close_to_expected((wav.len() - 44) / 2));
+    // speechkit reads what its own server writes.
+    let decoded = speechkit::audio::decode(&wav, speechkit::audio::DecodeLimits::default())
+        .expect("the streaming WAV decodes");
+    assert_eq!(decoded.sample_rate.hz(), 24_000);
+    assert_eq!(decoded.samples.len(), (wav.len() - 44) / 2);
 
     // Missing and null optional fields keep the existing defaults.
     let (status, wav) = send(
@@ -370,4 +375,45 @@ async fn dashscope_open_runs_outside_tokio_tasks() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(!String::from_utf8(body).unwrap().contains("HTTP 503"));
     server.abort();
+}
+
+/// Shutting the server down does not wait forever for a client that
+/// stopped reading its response: hyper cannot time out the write, so the
+/// connection would stay open as long as the client keeps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_does_not_wait_for_a_client_that_stopped_reading() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let running = server(tts(FakeTts::plain(), 8))
+        .with_bind("127.0.0.1:0")
+        .with_timeout(Duration::from_millis(500))
+        .with_shutdown_timeout(Duration::from_secs(1))
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    // About 2 MB of audio, into a client that reads none of it.
+    let body = json!({"model": "tts-1", "input": "word. ".repeat(680), "voice": "alpha",
+        "response_format": "pcm"})
+    .to_string();
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut client = socket.connect(running.local_addr()).await.unwrap();
+    let request = format!(
+        "POST /v1/audio/speech HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    client.write_all(request.as_bytes()).await.unwrap();
+    // Let the response fill the socket and pass its deadline.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let stopped = tokio::time::timeout(Duration::from_secs(10), running.shutdown()).await;
+    assert!(
+        stopped.is_ok(),
+        "shutdown waited on a client that stopped reading"
+    );
+    // The server closed the connection: what it sent ends.
+    let mut rest = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut rest)).await;
+    assert!(read.is_ok(), "the connection is still open");
 }

@@ -55,8 +55,7 @@ fn a_reader_gets_every_sample_from_its_start_in_order() {
     let (id, start) = timeline.add_reader(Some(200), 0, 10_000).unwrap();
     assert_eq!(start, 200);
     timeline.append(&ramp(500, 700));
-    timeline.stop_reader(id);
-    timeline.append(&[]);
+    timeline.stop_reader(id, 1_200);
     timeline.append(&ramp(1_200, 100));
     let (heard, end) = read_all(&timeline, id);
     assert_eq!(heard, ramp(200, 1_000));
@@ -110,8 +109,7 @@ fn samples_lost_fail_the_readers_that_would_read_across_them() {
     timeline.append(&ramp(0, 500));
     let (early, _) = timeline.add_reader(Some(100), 0, 100_000).unwrap();
     let (stopped, _) = timeline.add_reader(Some(200), 0, 100_000).unwrap();
-    timeline.stop_reader(stopped);
-    timeline.append(&[]);
+    timeline.stop_reader(stopped, 500);
 
     // The device lost samples after position 500, where the audio so far ends.
     timeline.append_with_loss(&[], 500);
@@ -206,18 +204,57 @@ fn a_callback_that_overflows_records_where_the_samples_were_lost() {
     assert_eq!(lost_at(), 200);
 }
 
+/// A capped callback loses what is past its room even when the ring has
+/// more, as it may once the capture thread drains it mid-callback.
 #[test]
-fn a_stop_takes_effect_at_the_next_append() {
+fn a_capped_callback_loses_what_is_past_its_room() {
+    let device = Device::new(RATE, &CaptureOptions::default());
+    let (mut producer, _consumer) = HeapRb::<f32>::new(100).split();
+    device.input_within(&ramp(0, 60), 1, &mut producer, 40);
+    assert_eq!(device.lost_at.load(Ordering::Relaxed), 40);
+    assert_eq!(device.dropped.load(Ordering::Relaxed), 20);
+    assert_eq!(device.queued.load(Ordering::Relaxed), 40);
+}
+
+#[test]
+fn a_stop_ahead_of_the_audio_moved_waits_for_it() {
     let timeline = Timeline::new(0, 10_000);
     let (id, _) = timeline.add_reader(None, 0, 10_000).unwrap();
     timeline.append(&ramp(0, 100));
-    timeline.stop_reader(id);
+    // The device had delivered 150 frames when the reader stopped, and
+    // the capture thread had moved 100 of them.
+    timeline.stop_reader(id, 150);
+    assert_eq!(timeline.read(id, 1_000, soon()), Read::Audio(ramp(0, 100)));
+    assert_eq!(timeline.read(id, 1_000, soon()), Read::Idle);
     // Audio delivered before the stop but moved after it still counts.
     timeline.append(&ramp(100, 50));
     timeline.append(&ramp(150, 50));
     let (heard, end) = read_all(&timeline, id);
-    assert_eq!(heard, ramp(0, 150));
+    assert_eq!(heard, ramp(100, 50));
     assert_eq!(end, Read::End(150));
+}
+
+#[test]
+fn a_stop_ahead_of_an_ended_timeline_ends_at_its_last_sample() {
+    let timeline = Timeline::new(0, 10_000);
+    let (id, _) = timeline.add_reader(None, 0, 10_000).unwrap();
+    timeline.append(&ramp(0, 100));
+    timeline.stop_reader(id, 150);
+    timeline.end();
+    let (heard, end) = read_all(&timeline, id);
+    assert_eq!(heard, ramp(0, 100));
+    assert_eq!(end, Read::End(100));
+}
+
+/// A stop from a listening counts the samples the device delivered, not
+/// those the capture thread moved, so it races no capture tick.
+#[test]
+fn a_listening_stop_counts_the_samples_delivered() {
+    let device = Device::new(RATE, &CaptureOptions::default());
+    let (mut producer, _consumer) = HeapRb::<f32>::new(1_000).split();
+    device.input(&ramp(0, 300), 1, &mut producer);
+    assert_eq!(device.delivered(), 300);
+    assert_eq!(device.timeline.position(), 0, "nothing moved yet");
 }
 
 #[test]

@@ -5,7 +5,7 @@ An OpenAI-compatible HTTP server for speechkit engines (feature `server`). Point
 | `POST /v1/audio/transcriptions` | Multipart `file`, `model` (ignored), `language`, `response_format` (`json` or `text`), and `stream` (server-sent events) |
 | `POST /v1/audio/speech` | JSON `input`, `voice`, `speed`, `model` (ignored), and `response_format` (`wav`, the default, or `pcm`) |
 | `GET /v1/models` | The loaded models |
-| `GET /health` | Status, active sessions, and the session limits |
+| `GET /health` | Status, active sessions, the session limits, and the recognition backend's `counters`, such as `IsolatedAsr`'s worker crashes. Recognition fields sit at the top level and synthesis fields under `speech`; `counters` is a recognition field, left out when the backend keeps none |
 
 Uploads are limited while they stream in (25 MiB by default, answered with 413). WebM and Opus are refused with 415 and a hint to transcode. When every session slot is busy the server answers 503 at once and never queues. A client that disconnects cancels its session. Errors use OpenAI's JSON error shape.
 

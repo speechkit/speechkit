@@ -276,6 +276,11 @@ pub struct ServeArgs {
     /// The synthesis model name reported by /v1/models.
     #[arg(long)]
     pub tts_model_id: Option<String>,
+    /// Build the backends, loading their models, and bind the address,
+    /// then exit without serving: 0 if both worked. Cloud backends are
+    /// configured but not contacted.
+    #[arg(long)]
+    pub check: bool,
 }
 
 impl ServeArgs {

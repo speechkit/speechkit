@@ -406,3 +406,121 @@ fn the_callback_keeps_its_last_skips_while_the_player_publishes() {
         "the new range is skipped"
     );
 }
+
+/// D-06: with a device latency longer than one buffer, which most devices
+/// have, audio counts as played only once its playback time has passed,
+/// not once the callback after it has run.
+#[test]
+fn played_waits_for_the_device_latency() {
+    let shared = Shared::new(RATE);
+    let (mut producer, mut consumer) = ring(RATE);
+    assert_eq!(producer.push_slice(&vec![0.1; 1_000]), 1_000);
+    let mut skips: Skips = [0; 2 * SKIPS];
+    // Two 10 ms buffers, each first heard 300 ms after its callback.
+    for _ in 0..2 {
+        let mut out = [0.0_f32; 160];
+        shared.render(
+            &mut consumer,
+            &mut out,
+            1,
+            ms(300),
+            Duration::ZERO,
+            &mut skips,
+        );
+    }
+    assert_eq!(shared.played_index(), 0, "nothing has been heard yet");
+    std::thread::sleep(ms(400));
+    assert_eq!(shared.played_index(), 320, "both buffers have been heard");
+}
+
+/// What `played_index` reports never goes back, even when a callback's
+/// playback time comes out a little early.
+#[test]
+fn played_never_goes_back() {
+    let shared = Shared::new(RATE);
+    let (mut producer, mut consumer) = ring(RATE);
+    assert_eq!(producer.push_slice(&vec![0.1; 1_000]), 1_000);
+    let mut skips: Skips = [0; 2 * SKIPS];
+    let mut out = [0.0_f32; 160];
+    // Heard 10 ms ago: all of it has played.
+    shared.render(
+        &mut consumer,
+        &mut out,
+        1,
+        Duration::ZERO,
+        ms(10),
+        &mut skips,
+    );
+    assert_eq!(shared.played_index(), 160);
+    // The next buffer is dated 50 ms ahead, as a jittery clock might.
+    shared.render(
+        &mut consumer,
+        &mut out,
+        1,
+        ms(50),
+        Duration::ZERO,
+        &mut skips,
+    );
+    assert_eq!(shared.played_index(), 160);
+}
+
+/// Once the audio runs out, the callbacks of silence that follow, each
+/// dated a latency ahead, do not hold back what the audio before them
+/// counts as played.
+#[test]
+fn silence_after_the_audio_does_not_hold_it_back() {
+    let shared = Shared::new(RATE);
+    let (mut producer, mut consumer) = ring(RATE);
+    assert_eq!(producer.push_slice(&vec![0.1; 160]), 160);
+    let mut skips: Skips = [0; 2 * SKIPS];
+    let mut out = [0.0_f32; 160];
+    shared.render(
+        &mut consumer,
+        &mut out,
+        1,
+        ms(50),
+        Duration::ZERO,
+        &mut skips,
+    );
+    let started = Instant::now();
+    while started.elapsed() < ms(150) {
+        shared.render(
+            &mut consumer,
+            &mut out,
+            1,
+            ms(50),
+            Duration::ZERO,
+            &mut skips,
+        );
+        std::thread::sleep(ms(10));
+    }
+    assert_eq!(shared.played_index(), 160, "the audio has been heard");
+}
+
+/// `Speaker::stop` stops only what was queued before it: a sound queued
+/// right after it plays, even when both land while the player is between
+/// handling stops and taking its next sound.
+#[test]
+fn stop_spares_a_sound_queued_after_it() {
+    let (speaker, fake) = Speaker::fake(RATE);
+    // Start the player, and let it go idle.
+    let first = speaker.play(tone(0.1, 10)).unwrap();
+    play_filled(&fake, &speaker.shared, frames(10) as u64);
+    first.finish(Duration::from_secs(5)).unwrap();
+
+    let (at_tx, at_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    *lock(&speaker.shared.between) = Some(Box::new(move || {
+        let _ = at_tx.send(());
+        let _ = go_rx.recv();
+    }));
+    at_rx.recv().unwrap();
+    speaker.stop();
+    let after = speaker.play(tone(0.2, 100)).unwrap();
+    go_tx.send(()).unwrap();
+
+    let heard = play_filled(&fake, &speaker.shared, frames(100) as u64);
+    assert_eq!(heard, vec![0.2; frames(100)], "the later sound played");
+    after.finish(Duration::from_secs(5)).unwrap();
+    assert_eq!(after.played(), ms(100));
+}

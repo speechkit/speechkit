@@ -7,7 +7,7 @@
 //! tests in `sherpa/kws/tokenize.rs`.
 //!
 //! - The spotter finds keywords spoken in the models' test clips, at the
-//!   right times, and again when they repeat.
+//!   right times, and again when they repeat, also after a pause.
 #![cfg(feature = "sherpa")]
 #![expect(clippy::unwrap_used, reason = "test helpers fail the calling test")]
 
@@ -164,5 +164,42 @@ fn keywords_given_as_tokens_are_reported_by_name() {
     assert!(!found.is_empty());
     for keyword in keywords(&found) {
         assert!(file.contains(&format!("@{keyword}")), "{keyword}");
+    }
+}
+
+/// A keyword is spotted again after a pause long enough for sherpa-onnx
+/// to reset the stream by itself (1.5 s of trailing blanks), and dated
+/// from the start of the stream.
+#[test]
+#[ignore = "needs the kws-en or kws-zh-en model"]
+fn a_keyword_after_a_pause_is_spotted_and_dated() {
+    for (id, keyword, wav) in [
+        ("kws-en", "light up", "test_wavs/0.wav"),
+        ("kws-zh-en", "Light up", "test_wavs/en_0.wav"),
+    ] {
+        let Some(dir) = model_dir(id) else {
+            continue;
+        };
+        let kws = KeywordSpotterConfig::new(&dir)
+            .with_keywords([keyword])
+            .load()
+            .unwrap();
+        let once = clip(&dir.join(wav)).samples;
+        let rate = kws.sample_rate();
+        let length = rate.duration_of(once.len() as u64);
+        for pause in [500, 2_000, 3_000, 5_000] {
+            let pause = Duration::from_millis(pause);
+            let silence = vec![0.0; usize::try_from(rate.frames_in(pause)).unwrap()];
+            let samples = [once.as_slice(), &silence, &once].concat();
+            let events = spot(&kws, &samples);
+            eprintln!("{id} {pause:?}: {events:?}");
+            assert_eq!(keywords(&events), [keyword; 2], "{id} {pause:?}");
+            let gap = events[1].start.checked_sub(events[0].start).unwrap();
+            assert!(
+                near(gap, (length + pause).as_secs_f64()),
+                "{id} {pause:?}: the second is {gap:?} after the first, not {:?}",
+                length + pause
+            );
+        }
     }
 }

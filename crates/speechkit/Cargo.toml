@@ -43,7 +43,7 @@ server = [
     "dep:hyper",
     "dep:hyper-util",
     "dep:serde_json",
-    "dep:tower-http",
+    "dep:http-body",
 ]
 ## Everything except `serde` and `sherpa-shared`.
 full = ["decode", "sherpa", "openai", "dashscope", "devices", "server"]
@@ -80,7 +80,7 @@ ringbuf = { workspace = true, optional = true }
 axum = { workspace = true, optional = true, features = ["http1", "tokio", "json", "multipart"] }
 hyper = { version = "1", optional = true, features = ["server", "http1"] }
 hyper-util = { version = "0.1", optional = true, features = ["tokio", "server", "server-graceful", "service", "http1"] }
-tower-http = { version = "0.6", optional = true, default-features = false, features = ["timeout"] }
+http-body = { version = "1", optional = true }
 
 [target.'cfg(speechkit_loom)'.dependencies]
 loom = "0.7"
