@@ -42,6 +42,14 @@ const STALL: &str = "SPEECHKIT_FAKE_WORKER_STALL";
 /// requests, as a frozen process would.
 const DEAF: &str = "SPEECHKIT_FAKE_WORKER_DEAF";
 
+/// Set to a number of seconds, makes the fake worker a wrapper, as a shell
+/// script that runs the worker without `exec` is: it starts the worker as
+/// its child, sharing its pipes, and waits for it. The child hangs before
+/// its handshake for that many seconds, then exits.
+const WRAP: &str = "SPEECHKIT_FAKE_WORKER_WRAP";
+/// Set in the wrapped child: how long it hangs.
+const LINGER: &str = "SPEECHKIT_FAKE_WORKER_LINGER";
+
 /// Stdin, until the file at `flag` exists: then every read blocks.
 struct Deaf<R> {
     inner: R,
@@ -181,6 +189,21 @@ fn worker_entry() {
     let Some(marker) = std::env::var_os(MARKER) else {
         return;
     };
+    if let Some(seconds) = std::env::var_os(WRAP) {
+        // Its stderr goes nowhere, so it does not hold the test's open.
+        let _ = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(std::env::args_os().skip(1))
+            .env_remove(WRAP)
+            .env(LINGER, seconds)
+            .stderr(std::process::Stdio::null())
+            .status();
+        std::process::exit(0);
+    }
+    if let Some(seconds) = std::env::var_os(LINGER) {
+        let seconds: u64 = seconds.to_str().unwrap().parse().unwrap();
+        std::thread::sleep(Duration::from_secs(seconds));
+        std::process::exit(0);
+    }
     if std::env::var_os(STALL).is_some_and(|stall| PathBuf::from(stall).exists()) {
         loop {
             std::thread::sleep(Duration::from_secs(60));
@@ -400,6 +423,28 @@ fn a_worker_that_hangs_while_starting_is_killed() {
     assert_retryable(&error);
     let detail = std::error::Error::source(&error).unwrap().to_string();
     assert!(detail.contains("did not start within"), "{detail}");
+}
+
+/// A worker command that wraps the worker, as a shell script without
+/// `exec` does, leaves the worker running when it is killed, holding the
+/// pipes. A start that times out still returns at its timeout, rather than
+/// when that orphan lets go of them.
+#[test]
+fn a_wrapped_worker_that_hangs_while_starting_is_given_up_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let begun = Instant::now();
+    let error = IsolatedAsr::spawn_command(
+        command(&dir)
+            .env(WRAP, "15")
+            .with_start_timeout(Duration::from_millis(500)),
+    )
+    .expect_err("the worker never started");
+    assert!(
+        begun.elapsed() < Duration::from_secs(10),
+        "the start waited {:?} for the wrapped worker's pipes",
+        begun.elapsed()
+    );
+    assert_retryable(&error);
 }
 
 /// A session that needs a new worker which hangs while starting fails,

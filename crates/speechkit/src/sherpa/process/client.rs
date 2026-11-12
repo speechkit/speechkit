@@ -10,7 +10,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -43,6 +42,11 @@ fn crashed(detail: impl std::fmt::Display) -> SpeechError {
 }
 
 /// How to start a worker process.
+///
+/// A worker that hangs or breaks is killed, which kills that process only.
+/// A wrapper, such as a shell script, should `exec` the worker rather than
+/// run it as a child: killing the wrapper would leave the worker running.
+/// The caller does not wait for it either way.
 #[derive(Debug, Clone)]
 pub struct WorkerCommand {
     program: PathBuf,
@@ -127,10 +131,8 @@ struct Worker {
     requests: Option<mpsc::Sender<Vec<u8>>>,
     /// The outcome of each write the writer thread made.
     written: mpsc::Receiver<std::io::Result<()>>,
-    writer: Option<JoinHandle<()>>,
     replies: mpsc::Receiver<Reply>,
     link: Link,
-    reader: Option<JoinHandle<()>>,
     /// The worker is gone, or a call to it failed.
     broken: bool,
     counts: Arc<Counts>,
@@ -175,7 +177,11 @@ impl Worker {
         let link: Link = Arc::default();
         let (send, replies) = mpsc::channel();
         let (send_hello, hello) = mpsc::channel();
-        let reader = std::thread::Builder::new()
+        // Neither pipe thread is waited for: a worker killed while a child
+        // of its own holds its pipes, such as a wrapper script that does not
+        // `exec` the worker, would hold the caller until that child exits.
+        // The threads end once the pipes close.
+        std::thread::Builder::new()
             .name("speechkit-worker-reader".into())
             .spawn({
                 let link = link.clone();
@@ -193,24 +199,18 @@ impl Worker {
                 kill(&mut process);
                 crashed(error)
             })?;
-        // Kills the worker, which ends its output and so the reader thread.
-        let abandon = |mut process: Child, reader: JoinHandle<()>| {
-            let status = kill(&mut process);
-            let _ = reader.join();
-            status
-        };
         let timeout = command.start_timeout;
         let hello = match hello.recv_timeout(timeout) {
             Ok(hello) => hello,
             Err(RecvTimeoutError::Timeout) => {
                 bump(&counts.killed);
-                let status = abandon(process, reader);
+                let status = kill(&mut process);
                 return Err(crashed(format!(
                     "it did not start within {timeout:?} ({status})"
                 )));
             }
             Err(RecvTimeoutError::Disconnected) => {
-                let status = abandon(process, reader);
+                let status = kill(&mut process);
                 return Err(crashed(format!("no hello from the worker ({status})")));
             }
         };
@@ -218,27 +218,27 @@ impl Worker {
             Ok(Some(Response::Hello { name, caps })) => match caps.try_into() {
                 Ok(caps) => (name, caps),
                 Err(error) => {
-                    abandon(process, reader);
+                    kill(&mut process);
                     return Err(error);
                 }
             },
             Ok(Some(Response::Error(error))) => {
-                abandon(process, reader);
+                kill(&mut process);
                 return Err(error.into());
             }
             Ok(_) => {
-                abandon(process, reader);
+                kill(&mut process);
                 return Err(crashed("no hello from the worker"));
             }
             Err(error) => {
-                let status = abandon(process, reader);
+                let status = kill(&mut process);
                 return Err(crashed(format!("{error} ({status})")));
             }
         };
-        let (requests, written, writer) = match spawn_writer(input) {
+        let (requests, written) = match spawn_writer(input) {
             Ok(writer) => writer,
             Err(error) => {
-                abandon(process, reader);
+                kill(&mut process);
                 return Err(crashed(error));
             }
         };
@@ -246,10 +246,8 @@ impl Worker {
             process,
             requests: Some(requests),
             written,
-            writer: Some(writer),
             replies,
             link,
-            reader: Some(reader),
             broken: false,
             counts: counts.clone(),
         };
@@ -351,34 +349,24 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.attach(None);
-        // Killing the worker ends a write it was not taking, and its output.
+        // Killing the worker ends a write it was not taking, and its output,
+        // and so its pipe threads, unless a child of its own holds the
+        // pipes; they are not waited for (see `launch`).
         kill(&mut self.process);
         drop(self.requests.take());
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
     }
 }
 
+/// The writer thread's ends: where encoded requests go, and how each
+/// write went.
+type WriterEnds = (mpsc::Sender<Vec<u8>>, mpsc::Receiver<std::io::Result<()>>);
+
 /// The writer thread, which writes each frame it is sent to `input` and
 /// reports how the write went, until a write fails or the sender is gone.
-#[expect(
-    clippy::type_complexity,
-    reason = "the two ends of the writer and its handle, used once"
-)]
-fn spawn_writer(
-    input: ChildStdin,
-) -> std::io::Result<(
-    mpsc::Sender<Vec<u8>>,
-    mpsc::Receiver<std::io::Result<()>>,
-    JoinHandle<()>,
-)> {
+fn spawn_writer(input: ChildStdin) -> std::io::Result<WriterEnds> {
     let (requests, frames) = mpsc::channel::<Vec<u8>>();
     let (wrote, written) = mpsc::channel();
-    let writer = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("speechkit-worker-writer".into())
         .spawn(move || {
             let mut input = BufWriter::new(input);
@@ -390,7 +378,7 @@ fn spawn_writer(
                 }
             }
         })?;
-    Ok((requests, written, writer))
+    Ok((requests, written))
 }
 
 /// Stops `process` and describes how it ended.
