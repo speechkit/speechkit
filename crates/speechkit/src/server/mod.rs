@@ -135,6 +135,8 @@ async fn health(State(state): State<state::Shared>) -> Response {
         body["model"] = json!(id);
         body["active_sessions"] = json!(asr.active_sessions());
         body["max_sessions"] = json!(asr.max_sessions());
+        // The recognition backend's, at the top level like its other
+        // fields; a synthesis backend's would go under "speech".
         let counters = asr.counters();
         if !counters.is_empty() {
             body["counters"] = counters
