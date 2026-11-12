@@ -501,3 +501,39 @@ fn failures_give_their_code_and_message() {
         }
     }
 }
+
+/// `serve --check` builds the backends, which loads their models, and
+/// binds the address, then exits without serving: 0 when both worked, and
+/// the usual failure otherwise. A deployment can tell a bad flag or model
+/// from a slow load before it takes traffic.
+#[test]
+fn serve_check_starts_and_exits() {
+    let check = ["serve", "--check", "--bind", "127.0.0.1:0"];
+    let (code, stdout, stderr) = call(&check, &Fake(FakeAsr::hello_world()));
+    assert_eq!(code, ExitCode::SUCCESS, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.contains("listening on http://127.0.0.1:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("check passed"), "{stderr}");
+
+    let (code, _, stderr) = call(&check, &Broken);
+    assert_eq!(
+        code,
+        ExitCode::from(speechkit_cli::EXIT_BACKEND),
+        "{stderr}"
+    );
+    assert!(stderr.contains("service unavailable"), "{stderr}");
+
+    // An address already in use.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = taken.local_addr().unwrap().to_string();
+    let (code, _, stderr) = call(
+        &["serve", "--check", "--bind", &bind],
+        &Fake(FakeAsr::hello_world()),
+    );
+    assert_ne!(code, ExitCode::SUCCESS, "{stderr}");
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains("check passed"), "{stderr}");
+}

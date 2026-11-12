@@ -28,6 +28,8 @@ Progress and partial results go to stderr; only the transcript (or, for `voices`
 
 Exit codes: 0 success, 2 usage error, 3 invalid input (a bad file, model, or option), 4 backend error.
 
+`speechkit serve --check` builds the backends, loading their models, and binds the address, then exits without serving. Run it before a deployment takes traffic: a nonzero exit is a bad flag, model, or address, not a slow load. Cloud backends are configured but not contacted.
+
 `--config` for `openai-http` is a JSON file:
 
 ```json

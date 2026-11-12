@@ -138,7 +138,16 @@ pub(crate) fn serve_until_signal(
     backends: &dyn BackendFactory,
     stderr: &mut dyn Write,
 ) -> Result<(), CliError> {
-    serve(args, backends, stderr)?.wait_for_signal()
+    let handle = serve(args, backends, stderr)?;
+    if args.check {
+        handle.shutdown()?;
+        let _ = writeln!(
+            stderr,
+            "check passed: the backends loaded and the address bound"
+        );
+        return Ok(());
+    }
+    handle.wait_for_signal()
 }
 
 #[cfg(test)]
