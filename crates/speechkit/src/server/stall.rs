@@ -1,11 +1,12 @@
 //! A write timeout for connections.
 //!
 //! hyper has none: a response to a client that stops reading waits for
-//! the socket to drain for as long as the client keeps it open. Without a
-//! request timeout (the default), that wait holds the request's session
-//! slot too, so a few stalled clients could take every slot. This wrapper
-//! fails a write that has made no progress for the timeout, which makes
-//! hyper close the connection and drop the response.
+//! the socket to drain for as long as the client keeps it open, so the
+//! connection stays open that long. The request's session slot is held
+//! until its budget runs out, which is at least 120 s when no request
+//! timeout is set. This wrapper fails a write that has made no progress
+//! for the timeout, which makes hyper close the connection and drop the
+//! response, freeing both sooner.
 
 use std::{
     future::Future as _,

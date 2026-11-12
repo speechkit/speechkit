@@ -197,11 +197,11 @@ Found while closing the gaps below. Each is fixed, test first.
 
 The server's body timeout was tower-http's `RequestBodyTimeoutLayer`, which restarts its timer after each frame. A client sending one byte every 50 ms never timed out: with a 300 ms timeout it held an upload, and a transcription admission, for the 106 s it took to send 2,000 bytes. SECURITY.md and the builder both promised the whole body within 120 s. A body wrapper (`server/deadline.rs`) now fails 120 s after the headers were read. hyper's header timeout was already a total; `trickled_headers_are_cut_off` checks it.
 
-### 17. A client that stops reading holds its synthesis slot (Confirmed; fixed in 355ec23)
+### 17. A client that stops reading holds its connection, and its synthesis slot (Confirmed; fixed in 355ec23)
 
 - [x] Close a connection whose writes make no progress.
 
-hyper has no write timeout. With no request timeout (the default), a client that stopped reading a speech response held its session slot for as long as it kept its connection open: 8 such clients shut out `/v1/audio/speech` on a default server. A connection whose writes make no progress for 30 s (`Server::with_write_timeout`, `server/stall.rs`) is now closed, which drops the response and frees the slot. This is the decision for the last Phase 4 item.
+hyper has no write timeout. A client that stopped reading a speech response kept its connection open for as long as it liked, and its session slot until the request's budget ran out: 120 s or more with no request timeout set, the default. So 8 such clients, reconnecting every 2 minutes, shut out `/v1/audio/speech` on a default server. (The commit and an earlier version of this note said the slot was held for as long as the connection; the review of the PR found the budget bounds it. The test waited only 5 s, so it could not tell the two apart.) A connection whose writes make no progress for 30 s (`Server::with_write_timeout`, `server/stall.rs`) is now closed, which drops the response and frees the slot. This is the decision for the last Phase 4 item.
 
 ### Read, nothing found
 

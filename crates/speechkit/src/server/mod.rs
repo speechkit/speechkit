@@ -32,6 +32,13 @@ impl Server {
     /// engine, `/health` answers 503, so a health check notices;
     /// [`start`](Self::start) refuses to serve such a server. With an empty
     /// [auth token](Self::with_auth), every `/v1/` request answers 401.
+    ///
+    /// The router keeps the body limit, the body deadline, and the request
+    /// budgets. The connection timeouts, for headers, writes
+    /// ([`with_write_timeout`](Self::with_write_timeout)), and shutdown
+    /// ([`with_shutdown_timeout`](Self::with_shutdown_timeout)), belong to
+    /// whatever serves the connections: [`start`](Self::start) sets them,
+    /// and a server of your own should set its own.
     pub fn router(self) -> Router {
         let max_body_bytes = self.max_body_bytes;
         let body_timeout = self.body_timeout;

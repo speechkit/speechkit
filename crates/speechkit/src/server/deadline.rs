@@ -1,10 +1,10 @@
 //! One deadline for a whole request body.
 //!
 //! tower-http's `RequestBodyTimeoutLayer` restarts its timer on every
-//! frame, so a client that sends a byte at a time never times out and can
-//! hold a connection, and a transcription admission, for as long as it
-//! likes. This body fails once its deadline passes, however steadily the
-//! client trickles.
+//! frame, so a client that sends a byte at a time never times out: it
+//! holds its connection, and a transcription upload its admission, until
+//! the request's budget runs out, 120 s or more by default. This body
+//! fails once its deadline passes, however steadily the client trickles.
 
 use std::{
     future::Future as _,
