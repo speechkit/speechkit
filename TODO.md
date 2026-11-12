@@ -11,7 +11,7 @@ Each item says how sure it is:
 
 - `cargo fmt --all -- --check`: passes.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passes.
-- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored. After Phase 2: 510 passed, 0 failed, 43 ignored.
+- `cargo test --workspace --all-features --no-fail-fast`: 494 passed, 1 failed, 43 ignored at review time; the failure was item 1. After Phase 1: 498 passed, 0 failed, 43 ignored. After Phase 2: 510 passed, 0 failed, 43 ignored. After Phase 4: 528 passed, 0 failed, 45 ignored.
 - After Phase 2, `cargo doc` with `-D warnings` and `cargo hack check -p speechkit --each-feature --no-dev-deps` also pass.
 - Not run yet: `cargo deny check`, the loom tests, the `#[ignore]` model tests. Item 7 changes session synchronization, but not the `slots` or `history` code the loom tests model.
 
@@ -187,6 +187,22 @@ The other sleeps in the testkit are followed by upper bounds or "nothing happene
 
 Fixed: `t02` now waits until audio is queued before calling `finish`. `AT_ONCE` is 500 ms, and the busy detector in D-04 takes 1 s, so a `stop` that waits for it still fails. Neither had failed on this machine, so there was no failure to reproduce. With every core busy, both passed 20 runs each. The two checks Phase 1 named are still only watched.
 
+### Phase 4 findings
+
+Found while closing the gaps below. Each is fixed, test first.
+
+### 16. The body timeout restarts on every frame (Confirmed; fixed in e4bf62f)
+
+- [x] Give the whole body one deadline.
+
+The server's body timeout was tower-http's `RequestBodyTimeoutLayer`, which restarts its timer after each frame. A client sending one byte every 50 ms never timed out: with a 300 ms timeout it held an upload, and a transcription admission, for the 106 s it took to send 2,000 bytes. SECURITY.md and the builder both promised the whole body within 120 s. A body wrapper (`server/deadline.rs`) now fails 120 s after the headers were read. hyper's header timeout was already a total; `trickled_headers_are_cut_off` checks it.
+
+### 17. A client that stops reading holds its synthesis slot (Confirmed; fixed in 355ec23)
+
+- [x] Close a connection whose writes make no progress.
+
+hyper has no write timeout. With no request timeout (the default), a client that stopped reading a speech response held its session slot for as long as it kept its connection open: 8 such clients shut out `/v1/audio/speech` on a default server. A connection whose writes make no progress for 30 s (`Server::with_write_timeout`, `server/stall.rs`) is now closed, which drops the response and frees the slot. This is the decision for the last Phase 4 item.
+
 ### Read, nothing found
 
 The OpenAI SSE decoder and HTTP limits; the Realtime and DashScope state machines and the shared WebSocket envelope (apart from item 9); the keyword tokenizer; the offline recognizer's checks; layout selection; silero VAD; sherpa TTS; bias and punctuation; `tts/chunk`; `asr/engine`; `vad/energy`; `speech/resample`; `release-check`.
@@ -221,15 +237,26 @@ The review did not read these. They are the larger part of the code by lines, an
 - [x] `xtask` (model fetching and hashing, release) and the release workflow.
 - [x] The `speechkit-testkit` fakes, for more timing assumptions like item 1.
 
-### Phase 4: close the gaps the findings point at
+### Phase 4: close the gaps the findings point at (done 2026-11-11; findings 16 and 17)
 
 Each finding is one case of a wider gap. These are worth doing once, rather than waiting for the next case.
 
-- [ ] **Every blocking wait on something outside the process has a bound.** Items 3, 4 and 9 are each an unbounded wait on a peer (a child process, a client socket, a WebSocket server). Grep for `blocking_send`, `read_exact`, `write_all`, `wait_forever`, and `recv()` without a timeout, and write down for each why it cannot block forever, or bound it.
-- [ ] **Round-trip tests across speechkit's own boundaries.** Item 2 is the server writing something the library cannot read. Add tests that pipe each producer into each consumer: `/v1/audio/speech` → `audio::decode` → `/v1/audio/transcriptions`; `encode_wav` → `audio::read`; the OpenAI speech client against the speechkit server. `round_trip.rs` is the place.
-- [ ] **CLI tests for failure messages.** Items 5 and 6 are both the CLI saying the wrong thing on a failure path. Add a table test of failures (timeout, bad bind, missing model, bad audio) with the exit code and the message each must give.
-- [ ] **A server fuzz or soak target for slow clients.** `server_request` fuzzes request bodies; nothing exercises slow or stalled readers and writers. A test harness with a throttled socket would have caught item 4.
-- [ ] **Write-side connection limits.** hyper has no write timeout, so a stalled reader keeps its connection open even after item 4. SECURITY.md already leaves connection limits to a proxy; decide whether an idle or total response timeout belongs in the server, and document the decision either way.
+- [x] **Every blocking wait on something outside the process has a bound.** Items 3, 4 and 9 are each an unbounded wait on a peer (a child process, a client socket, a WebSocket server). Grep for `blocking_send`, `read_exact`, `write_all`, `wait_forever`, and `recv()` without a timeout, and write down for each why it cannot block forever, or bound it. Two were unbounded and are fixed:
+  - Stopping the server waited for every open connection, so a client that stopped reading held up a shutdown forever. It now waits at most 30 s (`with_shutdown_timeout`), then closes them (8949778).
+  - `Worker::call` wrote its request to the worker's stdin with no bound, so a worker that stopped reading hung the caller. A writer thread now takes the request, and the call timeout covers the write and the reply together (b95928b).
+
+  The rest cannot block forever:
+  - Bounded by a timeout: `Worker::start` (start timeout), `Worker::reply` (call timeout), `Worker::kill` (SIGKILL, then a wait that a killed child always ends), every cloud HTTP and WebSocket call, the server's transcription forwarding (item 4), and the speech pump (`timeout_at`).
+  - Bounded by the session deadline: the CLI's `with_progress` join.
+  - Waits only on threads in this process, which always finish: `wait_forever` (condvars of in-process threads), the speaker player's join, and the cloud runtime's join.
+  - Reads memory or a local file: `wav.rs`'s `read_exact`.
+  - Unbounded by design, and documented as such: the `Watching` iterator's `recv` and the `mic` command's stdin `read_line`, which wait on the caller.
+  - The worker blocking on its parent is fine: the parent kills it.
+  - Not bounded: creating and dropping a cpal device stream, which calls into the platform. Bounding it would mean abandoning a thread stuck in a driver.
+- [x] **Round-trip tests across speechkit's own boundaries.** Item 2 is the server writing something the library cannot read. Add tests that pipe each producer into each consumer: `/v1/audio/speech` → `audio::decode` → `/v1/audio/transcriptions`; `encode_wav` → `audio::read`; the OpenAI speech client against the speechkit server. Done in `server_round_trip.rs` (fdf1629), which fails with item 2's fix reverted; `encode_wav` → `audio::read` is the `wav.rs` proptest, which now covers every common sample rate.
+- [x] **CLI tests for failure messages.** Items 5 and 6 are both the CLI saying the wrong thing on a failure path. Add a table test of failures (timeout, bad bind, missing model, bad audio) with the exit code and the message each must give. `failures_give_their_code_and_message` covers 11 failures (15b4026). It found one bad message: a file that is not audio was reported with symphonia's internal probe error, and now says "not a supported audio format".
+- [x] **A server fuzz or soak target for slow clients.** `server_request` fuzzes request bodies; nothing exercises slow or stalled readers and writers. A test harness with a throttled socket would have caught item 4. Done as tests rather than a fuzz target: `server_slow_clients.rs` (ea1fb4f) reads over sockets with 4 KiB receive buffers, slowly or not at all, and `src/server/tests.rs` trickles headers and bodies a byte at a time. They found items 16 and 17.
+- [x] **Write-side connection limits.** hyper has no write timeout, so a stalled reader keeps its connection open even after item 4. SECURITY.md already leaves connection limits to a proxy; decide whether an idle or total response timeout belongs in the server, and document the decision either way. Decided: an idle write timeout belongs in the server, because without one a stalled reader holds a session slot (item 17). A total response timeout does not: it would cut off slow clients that are still reading, and the request budget already bounds how long a response is produced. Per-client connection limits stay with a proxy. SECURITY.md says so.
 
 ### Phase 5: worth considering, not urgent
 
