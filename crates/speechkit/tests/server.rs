@@ -644,3 +644,43 @@ async fn http_sse_partials_arrive_before_done() {
     assert!(session.finish(Duration::from_secs(3)).is_ok());
     server.abort();
 }
+
+/// A host name listens on every address it resolves to, on one port:
+/// `localhost` is often both `127.0.0.1` and `::1`, and a client may try
+/// either first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_name_listens_on_each_of_its_addresses() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut local = Vec::new();
+    for address in tokio::net::lookup_host("localhost:0").await.unwrap() {
+        // Only the addresses this machine can listen on at all.
+        if tokio::net::TcpListener::bind(address).await.is_ok() && !local.contains(&address) {
+            local.push(address);
+        }
+    }
+    assert!(!local.is_empty(), "localhost names no address to bind");
+    let running = server(engine(FakeAsr::hello_world(), 8))
+        .with_bind("localhost:0")
+        .start(std::future::pending())
+        .await
+        .unwrap();
+    let port = running.local_addr().port();
+    for mut address in local {
+        address.set_port(port);
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .unwrap_or_else(|error| panic!("{address}: {error}"));
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "{address}: {response}"
+        );
+    }
+    running.shutdown().await.unwrap();
+}
