@@ -211,7 +211,10 @@ impl RunningServer {
     }
 
     /// Stops accepting connections, lets in-flight requests finish, and
-    /// waits for the server to stop.
+    /// waits for the server to stop. When it returns, every connection has
+    /// been closed, so the sessions of requests cut off by the
+    /// [shutdown timeout](Server::with_shutdown_timeout) have been
+    /// cancelled; an engine may still take a moment to free their slots.
     ///
     /// # Errors
     ///
@@ -243,7 +246,9 @@ struct Timeouts {
 }
 
 /// Accepts connections until `signal`, then lets open ones finish for up
-/// to the shutdown timeout, and closes the rest.
+/// to the shutdown timeout, and closes the rest. It returns once every
+/// connection task has ended, so their requests' sessions have been
+/// cancelled and their admissions released by then.
 ///
 /// `axum::serve` sets no timer, so hyper would never enforce a header
 /// timeout; serving each connection here fixes that, which stops clients
@@ -264,6 +269,9 @@ async fn serve_connections(
     // Set once the shutdown timeout passes: every connection still open
     // is dropped, which closes its socket.
     let (close, closed) = tokio::sync::watch::channel(false);
+    // Each connection task holds a clone, so the channel closes once they
+    // have all ended.
+    let (alive, mut ended) = tokio::sync::mpsc::channel::<()>(1);
     let mut signal = std::pin::pin!(signal);
     // Which listener to try first, rotated so a busy one cannot starve
     // the others.
@@ -301,7 +309,9 @@ async fn serve_connections(
             builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(app.clone()));
         let connection = graceful.watch(connection);
         let mut closed = closed.clone();
+        let alive = alive.clone();
         tokio::spawn(async move {
+            let _alive = alive;
             tokio::select! {
                 result = connection => {
                     if let Err(error) = result {
@@ -326,6 +336,8 @@ async fn serve_connections(
         );
         let _ = close.send(true);
     }
+    drop(alive);
+    let _ = ended.recv().await;
 }
 
 /// Listens on every address `bind` names: an address such as
