@@ -571,7 +571,9 @@ impl AsrBackend for IsolatedAsr {
 
     /// `workers_started`, `worker_start_failures`, `workers_crashed`
     /// (exited on their own, in use or idle), and `workers_killed` (did not
-    /// start or answer in time), counting the first worker too.
+    /// start or answer in time), counting the first worker too. They
+    /// overlap: a worker that hangs while starting is both a start failure
+    /// and a kill, so adding them up counts it twice.
     fn counters(&self) -> Vec<(&'static str, u64)> {
         let counts = &self.pool.counts;
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
