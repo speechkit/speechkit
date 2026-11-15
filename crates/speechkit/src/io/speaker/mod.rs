@@ -54,6 +54,14 @@ const PREFILL: Duration = Duration::from_millis(100);
 const SKIPS: usize = 4;
 /// The skip ranges the player publishes: `from, to` pairs.
 type Skips = [u64; 2 * SKIPS];
+/// The most runs of real samples the clock keeps: enough for a device
+/// latency of several buffers, each cut by a few skips.
+const RUNS: usize = 8;
+/// The clock the callback publishes: the index after the last sample it
+/// took, skipped ones included, then up to [`RUNS`] runs of samples it
+/// played, newest first, as `from, to, until` triples: indices `from..to`
+/// finish playing at `until`. Empty ones are `0, 0, 0`.
+type Clock = [u64; 1 + 3 * RUNS];
 /// Added to playback times, in nanoseconds, so a time before the clock
 /// started still counts forward.
 const BIAS: u64 = 1 << 62;
@@ -123,10 +131,10 @@ pub(crate) struct Shared {
     rate: SampleRate,
     /// When the clock started; playback times are nanoseconds since it.
     base: Instant,
-    /// From the callback: the index after the last sample it took, and
-    /// when the last of those samples it played finishes playing. A buffer
-    /// of only silence moves neither, so the time stays that of real audio.
-    clock: SeqCell<2>,
+    /// From the callback: where it has reached, and when the samples it
+    /// played last finish playing (see [`Clock`]). A buffer of only
+    /// silence adds no run, so the times stay those of real audio.
+    clock: SeqCell<{ 1 + 3 * RUNS }>,
     /// From the player thread: up to [`SKIPS`] ranges of indices the
     /// callback skips, as `from, to` pairs in index order; empty ones are
     /// `0, 0`.
@@ -201,21 +209,9 @@ impl Shared {
     /// have reached their playback time (D-06). Skipped samples count as
     /// played once the audio before them has. It never goes back.
     fn played_index(&self) -> u64 {
-        let [end, until] = self.clock.read();
+        let clock = self.clock.read();
         let now = self.now();
-        let index = if now >= until {
-            end
-        } else {
-            // With a device latency longer than a buffer, more than the
-            // latest buffer is still to play. The device plays samples one
-            // after another, so count back from the end by the time left.
-            // Skipped samples and gaps take no playback time, so this errs
-            // on the side of less, and so does rounding the time left up
-            // to a whole frame.
-            let left =
-                (u128::from(until - now) * u128::from(self.rate.hz())).div_ceil(1_000_000_000);
-            end.saturating_sub(u64::try_from(left).unwrap_or(u64::MAX))
-        };
+        let index = played_at(&clock, self.rate, now);
         self.heard.fetch_max(index, Ordering::Relaxed).max(index)
     }
 
@@ -239,6 +235,16 @@ impl Shared {
             *skips = fresh;
         }
         let skips = *skips;
+        let mut clock = self.clock.read();
+        let at = self
+            .now()
+            .saturating_add(u64::try_from(latency.as_nanos()).unwrap_or(0));
+        let at = at.saturating_sub(u64::try_from(ago.as_nanos()).unwrap_or(u64::MAX));
+        // When the first `real` samples taken finish playing.
+        let rate = self.rate;
+        let after = |real: u64| {
+            at.saturating_add(u64::try_from(rate.duration_of(real).as_nanos()).unwrap_or(u64::MAX))
+        };
         let mut index = self.popped.load(Ordering::Relaxed);
         let skip = |consumer: &mut dyn FnMut(usize) -> usize, index: &mut u64| {
             // Ranges are in index order, so one pass skips them all.
@@ -251,6 +257,8 @@ impl Shared {
         };
         skip(&mut |count| consumer.skip(count), &mut index);
         let mut real = 0_u64;
+        // The run of samples played since the last skip.
+        let mut run = index..index;
         let mut dry = false;
         let silent = fill_interleaved(out, channels, || {
             if dry {
@@ -261,26 +269,25 @@ impl Shared {
                 Some(_) => {
                     index += 1;
                     real += 1;
+                    run.end = index;
                     skip(&mut |count| consumer.skip(count), &mut index);
+                    if index != run.end {
+                        add_run(&mut clock, run.clone(), after(real));
+                        run = index..index;
+                    }
                 }
                 None => dry = true,
             }
             sample
         });
         self.popped.store(index, Ordering::Relaxed);
-        let at = self
-            .now()
-            .saturating_add(u64::try_from(latency.as_nanos()).unwrap_or(0));
-        let at = at.saturating_sub(u64::try_from(ago.as_nanos()).unwrap_or(u64::MAX));
-        let until = if real > 0 {
-            let took = self.rate.duration_of(real);
-            at.saturating_add(u64::try_from(took.as_nanos()).unwrap_or(u64::MAX))
-        } else {
-            // Silence plays nothing of ours: skipped samples count once
-            // what came before them has played.
-            self.clock.read()[1]
-        };
-        self.clock.write([index, until]);
+        // Silence plays nothing of ours and adds no run: skipped samples
+        // count once what came before them has played.
+        if !run.is_empty() {
+            add_run(&mut clock, run, after(real));
+        }
+        clock[0] = index;
+        self.clock.write(clock);
         if silent > 0 && self.expecting.load(Ordering::Relaxed) {
             self.underruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -289,6 +296,49 @@ impl Shared {
     fn device_lost(&self) -> bool {
         self.lost.load(Ordering::Relaxed)
     }
+}
+
+/// Records in `clock` that the samples `run` finish playing at `until`. A
+/// run that carries on from the newest one extends it.
+fn add_run(clock: &mut Clock, run: std::ops::Range<u64>, until: u64) {
+    if clock[3] != 0 && clock[2] == run.start {
+        clock[2] = run.end;
+        clock[3] = until;
+        return;
+    }
+    // Shift the runs one place older; the oldest falls off.
+    clock.copy_within(1..=3 * (RUNS - 1), 4);
+    clock[1..4].copy_from_slice(&[run.start, run.end, until]);
+}
+
+/// The index up to which `clock` says the device has played at `now`.
+/// Samples play one after another, so within a run, the samples played are
+/// counted from when it started; a run started at the time of its length
+/// before it finishes, which errs on the side of less after a gap, and so
+/// does rounding down to a whole frame. Skipped samples count as played
+/// once the run before them has. A run that has not started yet counts as
+/// nothing played since the one before it, and before the oldest run kept,
+/// everything has played.
+fn played_at(clock: &Clock, rate: SampleRate, now: u64) -> u64 {
+    // The index everything before which has played, as far as the runs
+    // newer than the one looked at say.
+    let mut played = clock[0];
+    for &[from, to, until] in clock[1..].as_chunks::<3>().0 {
+        if until == 0 {
+            break;
+        }
+        if now >= until {
+            return played;
+        }
+        let length = u64::try_from(rate.duration_of(to - from).as_nanos()).unwrap_or(u64::MAX);
+        let start = until.saturating_sub(length);
+        if now >= start {
+            let elapsed = u128::from(now - start) * u128::from(rate.hz()) / 1_000_000_000;
+            return from + u64::try_from(elapsed).unwrap_or(u64::MAX).min(to - from);
+        }
+        played = from;
+    }
+    played
 }
 
 /// Where a speaker's audio goes. The device's payload is boxed because its

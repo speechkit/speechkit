@@ -433,6 +433,34 @@ fn played_waits_for_the_device_latency() {
     assert_eq!(shared.played_index(), 320, "both buffers have been heard");
 }
 
+/// A skip in the audio still to play does not count as played: only the
+/// time of real samples is counted back (D-06).
+#[test]
+fn played_does_not_count_a_skip_still_ahead() {
+    let shared = Shared::new(RATE);
+    let (mut producer, mut consumer) = ring(RATE);
+    // 500 samples, 5000 of a stopped sound, then 500 more.
+    assert_eq!(producer.push_slice(&vec![0.1; 6_000]), 6_000);
+    let mut values = [0; 2 * SKIPS];
+    values[..2].copy_from_slice(&[500, 5_500]);
+    shared.skip.write(values);
+    let mut skips: Skips = [0; 2 * SKIPS];
+    let mut out = [0.0_f32; 1_000];
+    // Half of the first 500 played already.
+    shared.render(
+        &mut consumer,
+        &mut out,
+        1,
+        Duration::ZERO,
+        RATE.duration_of(250),
+        &mut skips,
+    );
+    let played = shared.played_index();
+    assert!(played < 500, "{played} counted the skip as played");
+    std::thread::sleep(ms(100));
+    assert_eq!(shared.played_index(), 6_000, "all of it has played");
+}
+
 /// What `played_index` reports never goes back, even when a callback's
 /// playback time comes out a little early.
 #[test]
