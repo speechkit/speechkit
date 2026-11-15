@@ -21,8 +21,7 @@ pub struct Server {
     /// How long a client may take to send its request headers before the
     /// connection is closed: 30 s.
     pub(crate) header_timeout: Duration,
-    /// How long a client may take to send its whole request body: 120 s,
-    /// enough for a 25 MiB upload at about 2 Mbit/s.
+    /// See [`with_body_timeout`](Self::with_body_timeout).
     pub(crate) body_timeout: Duration,
     /// The longest `input` `/v1/audio/speech` accepts, in characters: 4096,
     /// OpenAI's documented limit.
@@ -90,6 +89,20 @@ impl Server {
     #[must_use]
     pub fn with_max_body_bytes(mut self, bytes: usize) -> Self {
         self.max_body_bytes = bytes;
+        self
+    }
+
+    /// How long a client may take to send its whole request body, counted
+    /// from when its headers were read. It is a limit on the whole body,
+    /// not on a pause in it, so a client cannot hold its connection, and a
+    /// transcription upload its admission, by sending a byte at a time. A
+    /// body still arriving when it passes is answered with 408. With
+    /// [`with_max_body_bytes`](Self::with_max_body_bytes), it sets the
+    /// slowest upload accepted: the defaults take a 25 MiB upload at about
+    /// 1.7 Mbit/s or faster. Default: 120 s.
+    #[must_use]
+    pub fn with_body_timeout(mut self, timeout: Duration) -> Self {
+        self.body_timeout = timeout;
         self
     }
 
