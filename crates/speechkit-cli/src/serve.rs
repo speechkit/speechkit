@@ -118,6 +118,9 @@ pub fn serve(
     if let Some(seconds) = args.timeout {
         server = server.with_timeout(Duration::from_secs(seconds));
     }
+    if let Some(seconds) = args.body_timeout {
+        server = server.with_body_timeout(Duration::from_secs(seconds));
+    }
     if let Some(language) = &args.backend.language {
         server = server.with_language(language.clone());
     }

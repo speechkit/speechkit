@@ -258,6 +258,10 @@ pub struct ServeArgs {
     /// The largest upload, in MiB.
     #[arg(long, default_value_t = 25)]
     pub max_body_mib: usize,
+    /// How long a client may take to send its whole upload, in seconds
+    /// [default: 120].
+    #[arg(long)]
+    pub body_timeout: Option<u64>,
     /// The limit for one transcription, in seconds.
     #[arg(long)]
     pub timeout: Option<u64>,

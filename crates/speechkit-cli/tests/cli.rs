@@ -298,6 +298,35 @@ fn serve_binds_a_host_name() {
     assert!(!stderr.contains("warning"), "{stderr}");
 }
 
+/// `--body-timeout` reaches the server: an upload that stalls is cut off
+/// long before the 120 s default.
+#[test]
+fn serve_applies_the_body_timeout() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        serve: ServeArgs,
+    }
+    let args = Wrapper::parse_from(["x", "--bind", "127.0.0.1:0", "--body-timeout", "1"]).serve;
+    let handle = serve(&args, &Fake(FakeAsr::hello_world()), &mut Vec::new()).unwrap();
+    let mut stream = TcpStream::connect(handle.local_addr()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    // Promise a body, send a little of it, then stall.
+    stream
+        .write_all(
+            b"POST /v1/audio/transcriptions HTTP/1.1\r\nHost: localhost\r\n\
+              Content-Type: multipart/form-data; boundary=b\r\nContent-Length: 100000\r\n\r\n--b\r\n",
+        )
+        .unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    handle.shutdown().unwrap();
+}
+
 /// A bind address that does not resolve is a usage error, found before
 /// the backend is built: loading a model first would make the user wait
 /// for nothing.
