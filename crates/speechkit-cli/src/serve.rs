@@ -55,16 +55,20 @@ fn model_name(explicit: Option<&String>, model: Option<&Path>, backend: &str) ->
     })
 }
 
-/// The addresses `bind` names, such as `localhost:8080`, so a bad one is
-/// reported before the backend is built.
-fn resolve(bind: &str) -> Result<Vec<SocketAddr>, CliError> {
+/// Checks that `bind`, such as `localhost:8080`, names an address, so a
+/// bad one is reported before the backend is built.
+fn check_bind(bind: &str) -> Result<(), CliError> {
     let invalid =
         |why: &dyn std::fmt::Display| CliError::usage(format!("invalid --bind {bind:?}: {why}"));
-    let addresses: Vec<_> = bind.to_socket_addrs().map_err(|e| invalid(&e))?.collect();
-    if addresses.is_empty() {
+    if bind
+        .to_socket_addrs()
+        .map_err(|e| invalid(&e))?
+        .next()
+        .is_none()
+    {
         return Err(invalid(&"it names no address"));
     }
-    Ok(addresses)
+    Ok(())
 }
 
 /// Whether every one of `addresses` is a loopback address.
@@ -87,15 +91,11 @@ pub fn serve(
         Some(var) => Some(Secret::from_env(var).map_err(|e| CliError::usage(e.to_string()))?),
         None => None,
     };
-    let addresses = resolve(&args.bind)?;
-    if auth.is_none() && !is_loopback(&addresses) {
-        let _ = writeln!(
-            stderr,
-            "warning: serving on {} without authentication; anyone who can reach it can use it \
-             (set --auth-token-env)",
-            args.bind
-        );
-    }
+    // Only to refuse a bad address before the backend is built. The
+    // warning below checks what was bound: a name looked up again could
+    // name other addresses.
+    check_bind(&args.bind)?;
+    let open = auth.is_none();
     let engine = backends.asr(&args.backend)?;
     let model_id = model_name(
         args.model_id.as_ref(),
@@ -132,6 +132,14 @@ pub fn serve(
         .thread_name("speechkit-serve")
         .build()?;
     let server = runtime.block_on(server.start(std::future::pending()))?;
+    if open && !is_loopback(server.local_addrs()) {
+        let _ = writeln!(
+            stderr,
+            "warning: serving on {} without authentication; anyone who can reach it can use it \
+             (set --auth-token-env)",
+            args.bind
+        );
+    }
     let _ = writeln!(stderr, "listening on http://{}", server.local_addr());
     Ok(ServeHandle { runtime, server })
 }
@@ -159,11 +167,15 @@ mod tests {
 
     #[test]
     fn loopback_detection() {
-        let loopback = |bind| is_loopback(&resolve(bind).unwrap());
+        let loopback = |bind: &str| is_loopback(&[bind.parse().unwrap()]);
         assert!(loopback("127.0.0.1:8080"));
         assert!(loopback("[::1]:80"));
-        assert!(loopback("localhost:8080"));
         assert!(!loopback("0.0.0.0:8080"));
-        assert!(resolve("not an address").is_err());
+        assert!(!is_loopback(&[
+            "127.0.0.1:80".parse().unwrap(),
+            "192.0.2.1:80".parse().unwrap()
+        ]));
+        assert!(check_bind("localhost:8080").is_ok());
+        assert!(check_bind("not an address").is_err());
     }
 }

@@ -666,8 +666,10 @@ async fn a_host_name_listens_on_each_of_its_addresses() {
         .await
         .unwrap();
     let port = running.local_addr().port();
+    assert_eq!(running.local_addrs().first(), Some(&running.local_addr()));
     for mut address in local {
         address.set_port(port);
+        assert!(running.local_addrs().contains(&address), "{address}");
         let mut stream = tokio::net::TcpStream::connect(address)
             .await
             .unwrap_or_else(|error| panic!("{address}: {error}"));

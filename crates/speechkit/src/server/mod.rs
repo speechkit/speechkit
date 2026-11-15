@@ -90,7 +90,7 @@ impl Server {
                 "the auth token is empty; an empty token would let anyone in".into(),
             ));
         }
-        let (local_addr, listeners) = bind(&self.bind).await?;
+        let (local_addr, local_addrs, listeners) = bind(&self.bind).await?;
         let timeouts = Timeouts {
             header: self.header_timeout,
             write: self.write_timeout,
@@ -110,6 +110,7 @@ impl Server {
         });
         Ok(RunningServer {
             local_addr,
+            local_addrs,
             shutdown: Some(shutdown),
             task,
         })
@@ -186,6 +187,8 @@ async fn models(State(state): State<state::Shared>) -> Response {
 #[must_use = "dropping a RunningServer stops the server"]
 pub struct RunningServer {
     local_addr: SocketAddr,
+    /// Every address bound, `local_addr` first.
+    local_addrs: Vec<SocketAddr>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<(), SpeechError>>,
 }
@@ -196,6 +199,15 @@ impl RunningServer {
     /// this port; this is the first.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Every address it listens on, the first being
+    /// [`local_addr`](Self::local_addr). These are the addresses actually
+    /// bound, so they are what to check, for example, before serving
+    /// without authentication: a host name resolved again could name
+    /// others.
+    pub fn local_addrs(&self) -> &[SocketAddr] {
+        &self.local_addrs
     }
 
     /// Stops accepting connections, lets in-flight requests finish, and
@@ -324,8 +336,9 @@ async fn serve_connections(
 /// rest. An address that cannot be bound is skipped, as long as one can be:
 /// a host without IPv6 still serves `localhost` over IPv4.
 ///
-/// Returns the first listener's address, with every listener.
-async fn bind(bind: &str) -> Result<(SocketAddr, Vec<TcpListener>), SpeechError> {
+/// Returns the first listener's address, every listener's address, and
+/// every listener, in the same order.
+async fn bind(bind: &str) -> Result<(SocketAddr, Vec<SocketAddr>, Vec<TcpListener>), SpeechError> {
     let invalid = |why: &dyn std::fmt::Display| {
         SpeechError::InvalidInput(format!("invalid bind address {bind:?}: {why}"))
     };
@@ -351,22 +364,24 @@ async fn bind(bind: &str) -> Result<(SocketAddr, Vec<TcpListener>), SpeechError>
             Err(error) => failures.push((address, error)),
         }
     }
-    let [first, ..] = listeners.as_slice() else {
+    let local_addrs = listeners
+        .iter()
+        .map(TcpListener::local_addr)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_error)?;
+    let Some(&local_addr) = local_addrs.first() else {
         return Err(failures.pop().map_or_else(
             || invalid(&"it names no address"),
             |(_, error)| io_error(error),
         ));
     };
-    let local_addr = first.local_addr().map_err(io_error)?;
     for (address, error) in failures {
         tracing::warn!(%address, %error, "not listening on an address {bind:?} names");
     }
-    for listener in &listeners {
-        if let Ok(local_addr) = listener.local_addr() {
-            tracing::info!(%local_addr, "listening");
-        }
+    for local_addr in &local_addrs {
+        tracing::info!(%local_addr, "listening");
     }
-    Ok((local_addr, listeners))
+    Ok((local_addr, local_addrs, listeners))
 }
 
 fn io_error(error: std::io::Error) -> SpeechError {
