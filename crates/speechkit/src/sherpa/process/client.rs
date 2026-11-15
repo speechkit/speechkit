@@ -103,6 +103,16 @@ enum Reply {
     Hung(String),
 }
 
+/// How a [`Worker::wait`] ended.
+enum Waited<T> {
+    Got(T),
+    /// The other end is gone.
+    Gone,
+    TimedOut,
+    /// The session stopped, and the grace after it ran out.
+    Stopped,
+}
+
 /// What a pool counts about its workers, for
 /// [`counters`](AsrBackend::counters).
 #[derive(Debug, Default)]
@@ -283,8 +293,8 @@ impl Worker {
         }
     }
 
-    /// Hands `request` to the writer thread and waits up to `timeout` for
-    /// the worker to take it.
+    /// Hands `request` to the writer thread and waits for the worker to
+    /// take it, as long as [`wait`](Self::wait) allows.
     fn send(&self, request: &Request, timeout: Duration) -> Result<(), Reply> {
         let mut frame = Vec::new();
         write_frame(&mut frame, request).map_err(|error| Reply::Gone(error.to_string()))?;
@@ -295,42 +305,51 @@ impl Worker {
         if !sent {
             return Err(Reply::Gone("it stopped taking requests".into()));
         }
-        match self.written.recv_timeout(timeout) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(Reply::Gone(error.to_string())),
-            Err(RecvTimeoutError::Timeout) => Err(Reply::Hung(format!(
+        match self.wait(&self.written, timeout) {
+            Waited::Got(Ok(())) => Ok(()),
+            Waited::Got(Err(error)) => Err(Reply::Gone(error.to_string())),
+            Waited::Gone => Err(Reply::Gone("it stopped taking requests".into())),
+            Waited::TimedOut => Err(Reply::Hung(format!(
                 "it did not take the request within {timeout:?}"
             ))),
-            Err(RecvTimeoutError::Disconnected) => {
-                Err(Reply::Gone("it stopped taking requests".into()))
-            }
+            Waited::Stopped => Err(Reply::Hung(
+                "it did not take the request after its session stopped".into(),
+            )),
         }
     }
 
-    /// Waits for the answer to the request just sent: at most `timeout`,
-    /// and at most [`STOPPED_GRACE`] once the attached session has stopped,
-    /// since nobody waits for its work then. A worker past either limit
-    /// is `Gone`.
+    /// Waits for the answer to the request just sent, as long as
+    /// [`wait`](Self::wait) allows.
     fn reply(&self, timeout: Duration) -> Reply {
+        match self.wait(&self.replies, timeout) {
+            Waited::Got(reply) => reply,
+            Waited::Gone => Reply::Gone("it stopped answering".into()),
+            Waited::TimedOut => Reply::Hung(format!("it did not answer within {timeout:?}")),
+            Waited::Stopped => Reply::Hung("it did not answer after its session stopped".into()),
+        }
+    }
+
+    /// Waits for `channel`: at most `timeout`, and at most
+    /// [`STOPPED_GRACE`] once the attached session has stopped, since
+    /// nobody waits for its work then.
+    fn wait<T>(&self, channel: &mpsc::Receiver<T>, timeout: Duration) -> Waited<T> {
         let started = Instant::now();
         let mut stopped: Option<Instant> = None;
         loop {
-            match self.replies.recv_timeout(POLL) {
-                Ok(reply) => return reply,
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Reply::Gone("it stopped answering".into());
-                }
+            match channel.recv_timeout(POLL) {
+                Ok(value) => return Waited::Got(value),
+                Err(RecvTimeoutError::Disconnected) => return Waited::Gone,
                 Err(RecvTimeoutError::Timeout) => {}
             }
             let now = Instant::now();
             if now.duration_since(started) >= timeout {
-                return Reply::Hung(format!("it did not answer within {timeout:?}"));
+                return Waited::TimedOut;
             }
             let stopping = lock(&self.link)
                 .as_ref()
                 .is_some_and(AsrEvents::is_stopping);
             if stopping && now.duration_since(*stopped.get_or_insert(now)) >= STOPPED_GRACE {
-                return Reply::Hung("it did not answer after its session stopped".into());
+                return Waited::Stopped;
             }
         }
     }
