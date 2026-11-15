@@ -392,6 +392,32 @@ fn cancelling_a_session_on_a_hung_worker_frees_its_slot() {
     assert!(run(&engine, &[]).unwrap().starts_with("pid"));
 }
 
+/// A session that stops while its worker is not taking a request, here
+/// because its start ran out of time, frees its slot within the stopped
+/// grace, not the call timeout.
+#[test]
+fn a_session_that_stops_on_a_worker_that_stopped_reading_frees_its_slot() {
+    let (engine, dir) = engine();
+    // Start the worker, and leave it idle in the pool.
+    assert!(run(&engine, &[]).unwrap().starts_with("pid"));
+    std::fs::write(dir.path().join("deaf"), "").unwrap();
+    // Far more than a pipe holds: the worker's read stops partway.
+    let phrase = "x".repeat(4_000);
+    let started = Instant::now();
+    let error = engine
+        .start(RATE, hints(&vec![phrase.as_str(); 100]), secs(1))
+        .expect_err("the worker did not take the request");
+    assert!(matches!(error, SpeechError::DeadlineExceeded), "{error}");
+    assert!(eventually(Duration::from_secs(30), || engine
+        .active_sessions()
+        == 0));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn a_worker_that_exited_while_idle_is_not_used() {
     let (engine, _dir) = engine();
